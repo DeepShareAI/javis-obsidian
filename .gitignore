@@ -1,0 +1,11 @@
+node_modules/
+
+# Build output. Only ever published as a GitHub release asset.
+main.js
+*.js.map
+
+# Per-vault plugin state. Never committed, and never a token store (§D).
+data.json
+
+.DS_Store
+coverage/
