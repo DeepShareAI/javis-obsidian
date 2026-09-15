@@ -1,6 +1,6 @@
 {
   "name": "javis-obsidian",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Obsidian plugin that mirrors the Javis wiki into a vault, one way.",
   "main": "main.js",
   "type": "module",
