@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { mergeAliases, mergeServerKeys, serializeFrontmatter, toList } from '../src/core/frontmatter';
-import { MARKER_END, MARKER_START } from '../src/core/markers';
+import { MARKER_END, MARKER_START, replaceMarkerBlock } from '../src/core/markers';
 import { TOMBSTONE_BANNER, applyTombstone, render } from '../src/core/render';
 import type { ServerPage } from '../src/core/types';
 
@@ -201,12 +201,30 @@ describe('applyTombstone', () => {
     expect(out).toContain('My own notes.');
     expect(out).toContain('title: Agent Builder');
     expect(out).toContain(TOMBSTONE_BANNER);
-    expect(out).toContain(`${MARKER_START}\n${MARKER_END}`);
   });
 
-  it('puts the banner above the generated block', () => {
+  it('puts the banner INSIDE the generated block, never in the user half', () => {
     const out = applyTombstone(live);
-    expect(out.indexOf(TOMBSTONE_BANNER)).toBeLessThan(out.indexOf(MARKER_START));
+
+    // The banner sits between the markers. Anything the plugin writes outside
+    // them it can never take back, because §F.2 forbids touching that half —
+    // which is exactly how a restored note kept a stale banner forever.
+    expect(out.indexOf(TOMBSTONE_BANNER)).toBeGreaterThan(out.indexOf(MARKER_START));
+    expect(out.indexOf(TOMBSTONE_BANNER)).toBeLessThan(out.indexOf(MARKER_END));
+  });
+
+  it('leaves no trace once the page is restored', () => {
+    // Regression for the E2E runbook's G3, which failed against the real vault:
+    // delete a page, restore it, and the "Deleted in Javis" banner survived the
+    // restore because it had been written above the start marker.
+    const tombstoned = applyTombstone(live);
+    const restored = replaceMarkerBlock(tombstoned, 'generated body');
+
+    expect(restored).not.toContain(TOMBSTONE_BANNER);
+    expect(restored).not.toContain('Deleted in Javis');
+    expect(restored).toContain('generated body');
+    expect(restored).toContain('My own notes.');
+    expect(restored).toBe(live);
   });
 
   it('is idempotent — a tombstoned row reappears in every later delta', () => {

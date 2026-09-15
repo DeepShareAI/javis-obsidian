@@ -10,16 +10,17 @@
 import type { Frontmatter, ServerPage } from './types';
 import { JAVIS_DELETED } from './types';
 import { mergeServerKeys, serializeFrontmatter } from './frontmatter';
-import { MARKER_START, replaceMarkerBlock } from './markers';
+import { replaceMarkerBlock } from './markers';
 
 /**
- * The banner prepended to a note whose row was deleted on the server.
+ * The banner shown in a note whose row was deleted on the server.
  *
  * A callout rather than a frontmatter key alone, because the frontmatter key is
  * invisible in reading mode and the user needs to know why the body emptied.
- * The literal text is also the idempotence guard: it is searched for before it
- * is prepended, so a tombstoned row that reappears in every subsequent delta
- * does not stack banners.
+ *
+ * It is the generated block's *content* while the page is deleted — never text
+ * written above the block. See applyTombstone for why that distinction is the
+ * whole fix.
  */
 export const TOMBSTONE_BANNER =
   '> [!warning] Deleted in Javis\n> This page no longer exists on the server. Nothing has been removed from this file except the generated block; the note itself is yours to keep or delete.';
@@ -33,26 +34,26 @@ export function render(page: ServerPage, existing: Frontmatter = {}): string {
 }
 
 /**
- * Blank the generated block and prepend the banner, leaving everything the
- * user wrote exactly where it is.
+ * Replace the generated block with the banner, leaving everything the user
+ * wrote exactly where it is.
  *
  * Never unlinks and never truncates: §F.2, "The plugin never calls
  * `vault.delete` or `vault.trash`." A tombstone is a note that stops being
  * updated, not a note that goes away.
  *
- * Idempotent: a second application finds the banner already present and
- * replaces an already-empty block with an empty block.
+ * The banner goes INSIDE the marker block, and that placement is load-bearing.
+ * An earlier version wrote it above MARKER_START, in the half of the file the
+ * plugin is forbidden to touch — so restoring the page cleared `javis_deleted`
+ * and refilled the block but could never remove the banner, and a note deleted
+ * once read as deleted forever. The E2E runbook's G3 caught it against a real
+ * vault. Inside the block, a restore overwrites the banner like any other
+ * generated content, with no exception carved out of the never-touch rule.
+ *
+ * Idempotent, and trivially so: replacing the block with the banner twice
+ * yields the same file.
  */
 export function applyTombstone(content: string): string {
-  const blanked = replaceMarkerBlock(content, '');
-  if (blanked.includes(TOMBSTONE_BANNER)) return blanked;
-
-  // Insert above the generated block but below any frontmatter, so the banner
-  // is the first thing rendered and the frontmatter stays a valid YAML block.
-  const at = blanked.indexOf(MARKER_START);
-  if (at === -1) return `${blanked.replace(/\s+$/, '')}\n\n${TOMBSTONE_BANNER}\n`;
-  const head = blanked.slice(0, at).replace(/[ \t]+$/, '');
-  return `${head}${TOMBSTONE_BANNER}\n\n${blanked.slice(at)}`;
+  return replaceMarkerBlock(content, TOMBSTONE_BANNER);
 }
 
 /** The frontmatter of a tombstoned note: the file's own, plus the flag. */
