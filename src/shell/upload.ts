@@ -308,13 +308,13 @@ export async function uploadOnce(deps: UploadDeps): Promise<UploadResult> {
 
     // 2. Enumerate and read.
     const texts = new Map<string, string>();
-    const notes = await readNotes(deps.vault, validation.ok, deps, texts);
+    const { notes, observedAt } = await readNotes(deps.vault, validation.ok, deps, texts);
 
     // 3. Decide.
     const plan = planUpload(notes, listing.sources, deps.memory, {
       folders: validation.ok,
       configDir,
-      now: deps.now,
+      now: observedAt,
       reuploadAll: deps.reuploadAll,
       reuploadIds: deps.reuploadIds ?? [],
       release: deps.release,
@@ -360,10 +360,18 @@ async function readNotes(
   folders: readonly string[],
   deps: UploadDeps,
   texts: Map<string, string>,
-): Promise<LocalNote[]> {
+): Promise<{ notes: LocalNote[]; observedAt: number }> {
   // Nothing selected: nothing to list (and nothing a listing could return).
-  if (folders.length === 0) return [];
+  // The server listing has already been fetched, so "now" is when the
+  // selection was found empty.
+  if (folders.length === 0) return { notes: [], observedAt: deps.now() };
   const listed = await vault.listNotesIn(folders);
+  // The clock is read HERE, when the vault was observed: after any step-up
+  // and the server listing, before the reads (which can each take the full
+  // timeout on a dataless iCloud file). A row missing from `listed` was
+  // missing at this moment, and that is the time §F.3.3 has to measure the
+  // five minutes from (see `UploadDeps.now`).
+  const observedAt = deps.now();
   const notes: LocalNote[] = [];
   for (const { path, cachedSourceId } of listed) {
     if (deps.signal?.aborted) throw new SyncCancelledError('Upload was cancelled.');
@@ -378,7 +386,7 @@ async function readNotes(
     texts.set(path, text);
     notes.push(describeNote(path, text, cachedSourceId));
   }
-  return notes;
+  return { notes, observedAt };
 }
 
 /**

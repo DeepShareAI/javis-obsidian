@@ -412,7 +412,9 @@ export default class JavisWikiSyncPlugin extends Plugin {
       folders: this.settings.uploadFolders,
       // The synced memory with THIS device's debounce clocks (§F.3.3, review).
       memory: joinMissing(this.settings.uploadMemory, this.#loadMissing()),
-      now: Date.now(),
+      // A clock, not a time: `uploadOnce` reads it after any step-up, when it
+      // enumerates the vault (review; see `UploadDeps.now`).
+      now: () => Date.now(),
       newId: () => crypto.randomUUID(),
       reuploadAll,
       reuploadIds: this.settings.pendingReuploadIds,

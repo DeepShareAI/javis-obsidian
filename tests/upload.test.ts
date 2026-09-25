@@ -154,7 +154,7 @@ function setup(files: Record<string, string>, over: Partial<UploadDeps> = {}) {
     vault,
     folders: ['Journal'],
     memory: {},
-    now: T0,
+    now: () => T0,
     newId: () => id(next++),
     reuploadAll: false,
     release: [],
@@ -483,6 +483,31 @@ describe('uploadOnce: step-up before anything is written (review of §C.7)', () 
     const result = await uploadOnce(deps({ stepUp, lacksWriteGrant: () => !canWrite }));
     expect(stepUp).toHaveBeenCalledTimes(1);
     expect(result.stoppedBy?.code).toBe('insufficient-scope');
+  });
+
+  it('dates a miss after the step-up, so two runs a minute apart cannot delete (§F.3.3, review)', async () => {
+    // T0: Sync now with a read-only token. The user spends 8 minutes on the
+    // consent screen; only then is the vault listed and gone.md found missing.
+    let clock = T0;
+    let canWrite = false;
+    const stepUp = vi.fn(async () => {
+      clock = T0 + 8 * 60_000;
+      canWrite = true;
+    });
+    const { api, deps } = setup({ 'Journal/a.md': stamped(1) });
+    api.listing = { sources: [row(id(1), 'Journal/a.md', stamped(1)), row(id(9), 'Journal/gone.md', 'x')], counts: {} };
+    const memory = { [id(9)]: { path: 'Journal/gone.md', hash: null, bytes: 1, missingSince: null } };
+    const first = await uploadOnce(deps({ memory, now: () => clock, stepUp, lacksWriteGrant: () => !canWrite }));
+    expect(stepUp).toHaveBeenCalledTimes(1);
+    expect(first.nextMemory[id(9)]!.missingSince).toBe(T0 + 8 * 60_000);
+
+    // One minute later the note is still missing: that is one minute between
+    // the two misses, not nine, so the delete waits.
+    clock = T0 + 9 * 60_000;
+    api.calls.length = 0;
+    const second = await uploadOnce(deps({ memory: first.nextMemory, now: () => clock }));
+    expect(api.calls).toEqual(['list']);
+    expect(second.waiting).toEqual([{ sourceId: id(9), path: 'Journal/gone.md', eligibleAt: T0 + 8 * 60_000 + DEBOUNCE_MS }]);
   });
 
   it('without a stepUp (background) a token that cannot write makes no request', async () => {

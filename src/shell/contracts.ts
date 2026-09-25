@@ -587,8 +587,19 @@ export interface UploadDeps {
   /** `settings.uploadFolders`. Empty → the run makes no request at all (D-RUN-2). */
   folders: readonly string[];
   memory: UploadMemory;
-  /** The injected clock for the debounce, epoch ms. */
-  now: number;
+  /**
+   * The injected clock for the debounce, epoch ms. A function, read once per
+   * run at the moment the vault is enumerated, and never at the start of the
+   * run (review): an interactive run can spend minutes in the step-up's
+   * consent screen before it lists anything, and `planUpload` stores this
+   * time as `missingSince` for every row the listing misses. A clock read
+   * before the step-up dated the first miss minutes before it was seen, so a
+   * second run one minute after the first could already pass the §F.3.3
+   * "two misses at least five minutes apart" test. Both runs read it at the
+   * same point — right after `listNotesIn` returns — so the span between two
+   * stored times is the span between two observations of the vault.
+   */
+  now: () => number;
   /** `crypto.randomUUID` in the plugin; the core never generates an id. */
   newId: () => string;
   reuploadAll: boolean;
