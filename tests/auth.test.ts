@@ -21,6 +21,8 @@ import {
   isExpired,
   isInvalidGrant,
   JavisOAuth,
+  canonicalOrigin,
+  originFromAudiences,
   normalizeBaseUrl,
   OAUTH_SCOPE,
   OAUTH_SCOPE_WRITE,
@@ -41,7 +43,7 @@ import {
   type HttpTransport,
   type LoopbackListener,
 } from '../src/shell/auth';
-import { SECRET_ACCESS_TOKEN, SECRET_REFRESH_TOKEN } from '../src/shell/contracts';
+import { SECRET_ACCESS_TOKEN, SECRET_REFRESH_TOKEN, SECRET_TOKEN_ORIGIN } from '../src/shell/contracts';
 import type { OAuthClientRegistration, SecretStore } from '../src/shell/contracts';
 import {
   AuthCancelledError,
@@ -49,6 +51,7 @@ import {
   AuthRevokedError,
   HttpError,
   NetworkError,
+  OriginChangedError,
   ProtocolError,
   RateLimitedError,
 } from '../src/shell/errors';
@@ -1148,5 +1151,112 @@ describe('audience', () => {
     });
     expect(h.auth.grantedAudiences()).toEqual(['https://mcp.javis.is/mcp']);
     expect(harness(() => ({ status: 500, text: '' })).auth.grantedAudiences()).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tokens are bound to the origin that issued them (review)
+// ---------------------------------------------------------------------------
+
+describe('tokens only ever go to the origin that issued them (review)', () => {
+  const REAL = 'https://mcp.javis.is';
+  const EVIL = 'https://attacker.example';
+
+  function bound(initial: Record<string, string>, url = REAL) {
+    const calls: HttpRequestInit[] = [];
+    const secrets = new FakeSecrets();
+    for (const [k, v] of Object.entries(initial)) secrets.set(k, v);
+    const base = { value: url };
+    const auth = new JavisOAuth({
+      baseUrl: () => base.value,
+      secrets,
+      http: async (req) => {
+        calls.push(req);
+        if (req.url.endsWith('/oauth/revoke')) return { status: 200, text: '' };
+        return tokenBody(liveJwt, 'refresh-2');
+      },
+      getClient: () => ({ clientId: 'cid-1', redirectUri: 'http://127.0.0.1:51234/callback' }),
+      setClient: async () => {},
+      openBrowser: vi.fn(),
+      listen: async () => ({
+        port: 51234,
+        redirectUri: 'http://127.0.0.1:51234/callback',
+        waitForCode: async () => 'the-code',
+        close() {},
+      }),
+      now: () => NOW,
+    });
+    return { auth, calls, secrets, base };
+  }
+
+  it('connect stores the origin with the tokens; a changed URL gets neither token', async () => {
+    const h = bound({});
+    await h.auth.connect();
+    expect(h.secrets.get(SECRET_TOKEN_ORIGIN)).toBe(REAL);
+    h.calls.length = 0;
+
+    // A synced data.json now names another server.
+    h.base.value = EVIL;
+    const live = await h.auth.getAccessToken().catch((e: unknown) => e);
+    expect(live).toBeInstanceOf(OriginChangedError);
+    expect((live as OriginChangedError).needsUserAction).toBe(true);
+    await expect(h.auth.refresh()).rejects.toBeInstanceOf(OriginChangedError);
+    expect(h.calls).toEqual([]);
+    // Not a revocation: changing the URL back recovers without a sign-in.
+    expect(h.auth.status()).toBe('connected');
+    h.base.value = `${REAL}/`;
+    await expect(h.auth.getAccessToken()).resolves.toBe(liveJwt);
+  });
+
+  it('an expired token is not refreshed against a changed URL', async () => {
+    const h = bound({ [SECRET_ACCESS_TOKEN]: deadJwt, [SECRET_REFRESH_TOKEN]: 'refresh-1', [SECRET_TOKEN_ORIGIN]: REAL }, EVIL);
+    await expect(h.auth.getAccessToken()).rejects.toBeInstanceOf(OriginChangedError);
+    expect(h.calls).toEqual([]);
+    expect(h.secrets.get(SECRET_REFRESH_TOKEN)).toBe('refresh-1');
+  });
+
+  it('a refresh at the bound origin keeps the binding', async () => {
+    const h = bound({ [SECRET_ACCESS_TOKEN]: deadJwt, [SECRET_REFRESH_TOKEN]: 'refresh-1', [SECRET_TOKEN_ORIGIN]: REAL });
+    await expect(h.auth.getAccessToken()).resolves.toBe(liveJwt);
+    expect(h.calls[0]!.url).toBe(`${REAL}/oauth/token`);
+    expect(h.secrets.get(SECRET_TOKEN_ORIGIN)).toBe(REAL);
+  });
+
+  it('disconnect revokes at the issuing origin, never at a changed URL', async () => {
+    const h = bound({ [SECRET_ACCESS_TOKEN]: liveJwt, [SECRET_REFRESH_TOKEN]: 'refresh-1', [SECRET_TOKEN_ORIGIN]: REAL }, EVIL);
+    await h.auth.disconnect();
+    expect(h.calls.map((c) => c.url)).toEqual([`${REAL}/oauth/revoke`]);
+    expect(h.secrets.get(SECRET_TOKEN_ORIGIN)).toBeNull();
+  });
+
+  it('a token stored before the origin was is bound by its aud', async () => {
+    const legacy = jwt({ sub: 'user_1', aud: `${REAL}/mcp`, exp: Math.floor(NOW / 1000) + 3600 });
+    const evil = bound({ [SECRET_ACCESS_TOKEN]: legacy, [SECRET_REFRESH_TOKEN]: 'refresh-1' }, EVIL);
+    await expect(evil.auth.getAccessToken()).rejects.toBeInstanceOf(OriginChangedError);
+    const real = bound({ [SECRET_ACCESS_TOKEN]: legacy, [SECRET_REFRESH_TOKEN]: 'refresh-1' });
+    await expect(real.auth.getAccessToken()).resolves.toBe(legacy);
+  });
+
+  it('an opaque token with no stored origin is bound to the URL on first use', async () => {
+    const h = bound({ [SECRET_ACCESS_TOKEN]: 'opaque-token', [SECRET_REFRESH_TOKEN]: 'refresh-1' });
+    await expect(h.auth.getAccessToken()).resolves.toBe('opaque-token');
+    expect(h.secrets.get(SECRET_TOKEN_ORIGIN)).toBe(REAL);
+    h.base.value = EVIL;
+    await expect(h.auth.getAccessToken()).rejects.toBeInstanceOf(OriginChangedError);
+  });
+
+  it('accountKey names the server and the subject, and nothing when not connected', async () => {
+    const h = bound({ [SECRET_ACCESS_TOKEN]: liveJwt, [SECRET_REFRESH_TOKEN]: 'refresh-1', [SECRET_TOKEN_ORIGIN]: `${REAL}/` });
+    expect(h.auth.accountKey()).toBe(`${REAL} user_1`);
+    expect(bound({}).auth.accountKey()).toBeNull();
+    expect(bound({ [SECRET_ACCESS_TOKEN]: 'opaque', [SECRET_REFRESH_TOKEN]: 'r' }).auth.accountKey()).toBeNull();
+  });
+
+  it('origin helpers compare the way the server URL is written', () => {
+    expect(canonicalOrigin('HTTPS://MCP.Javis.is:443/')).toBe(REAL);
+    expect(canonicalOrigin('not a url')).toBeNull();
+    expect(originFromAudiences([`${REAL}/wiki`])).toBe(REAL);
+    expect(originFromAudiences(['https://elsewhere.example/other'])).toBeNull();
+    expect(originFromAudiences(null)).toBeNull();
   });
 });

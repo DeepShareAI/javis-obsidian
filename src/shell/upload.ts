@@ -196,6 +196,10 @@ function isRunLevel(error: unknown): boolean {
     case 'auth-expired':
     case 'auth-revoked':
     case 'insufficient-scope':
+    // The URL is not the tokens' origin, or the account is not this vault's
+    // (review): the same answer for every note, and nothing may be sent.
+    case 'origin-changed':
+    case 'account-changed':
     case 'cancelled':
     case 'network':
     case 'rate-limited':

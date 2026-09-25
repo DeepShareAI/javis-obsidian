@@ -81,6 +81,14 @@ export interface SecretStore {
 
 export const SECRET_ACCESS_TOKEN = 'javis-wiki-access-token';
 export const SECRET_REFRESH_TOKEN = 'javis-wiki-refresh-token';
+/**
+ * The origin the two tokens above were issued by (review). Not a secret, but
+ * kept beside them, in this device's keychain, because it must be exactly as
+ * trustworthy as they are: `data.json` syncs and anyone who can write it can
+ * change `baseUrl`, so the tokens are only ever sent to the origin stored
+ * here (`OriginChangedError`).
+ */
+export const SECRET_TOKEN_ORIGIN = 'javis-wiki-token-origin';
 
 /**
  * Hands a URL to the SYSTEM browser.

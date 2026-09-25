@@ -23,6 +23,7 @@ import {
   HttpError,
   InsufficientScopeError,
   NetworkError,
+  OriginChangedError,
   ProtocolError,
   RateLimitedError,
 } from '../src/shell/errors';
@@ -376,6 +377,15 @@ describe('uploadOnce: cancellation and failures', () => {
     expect(result.stoppedBy?.code).toBe('http');
     expect(api.calls).toEqual(['list', `put ${id(1)}`]);
     expect(stepUp).not.toHaveBeenCalled();
+    expect(result.failures).toEqual([]);
+  });
+
+  it('a server URL that is not the tokens\' origin stops the run at the first request (review)', async () => {
+    const { api, deps } = setup({ 'Journal/b.md': stamped(2), 'Journal/c.md': stamped(3) });
+    api.anyPut.push(new OriginChangedError('https://mcp.javis.is', 'https://attacker.example'));
+    const result = await uploadOnce(deps());
+    expect(result.stoppedBy).toMatchObject({ code: 'origin-changed', needsUserAction: true });
+    expect(api.calls).toEqual(['list', `put ${id(2)}`]);
     expect(result.failures).toEqual([]);
   });
 

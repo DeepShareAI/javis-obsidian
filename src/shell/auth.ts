@@ -53,13 +53,14 @@ import type {
   OAuthClientRegistration,
   SecretStore,
 } from './contracts';
-import { SECRET_ACCESS_TOKEN, SECRET_REFRESH_TOKEN } from './contracts';
+import { SECRET_ACCESS_TOKEN, SECRET_REFRESH_TOKEN, SECRET_TOKEN_ORIGIN } from './contracts';
 import {
   AuthCancelledError,
   AuthRequiredError,
   AuthRevokedError,
   HttpError,
   NetworkError,
+  OriginChangedError,
   ProtocolError,
   RateLimitedError,
 } from './errors';
@@ -363,6 +364,39 @@ export function scopesFromJwt(token: string): string[] | null {
  */
 export function wikiResource(baseUrl: string): string {
   return `${normalizeBaseUrl(baseUrl)}/wiki`;
+}
+
+/**
+ * A server URL in the one spelling two URLs are compared in: scheme and host
+ * lowercased by `URL`, the default port dropped, trailing slashes trimmed.
+ * Null when it does not parse.
+ */
+export function canonicalOrigin(baseUrl: string): string | null {
+  try {
+    const url = new URL(normalizeBaseUrl(baseUrl));
+    return `${url.origin}${url.pathname.replace(/\/+$/, '')}`;
+  } catch {
+    return null;
+  }
+}
+
+/** True when two server URLs name the same server (`canonicalOrigin`). */
+export function sameOrigin(a: string, b: string): boolean {
+  const ca = canonicalOrigin(a);
+  return ca !== null && ca === canonicalOrigin(b);
+}
+
+/**
+ * The server a token was minted for, read from its `aud`: the resource minus
+ * its `/wiki` or `/mcp` suffix. Only for tokens stored before the origin was
+ * (see `SECRET_TOKEN_ORIGIN`); null when the token says nothing usable.
+ */
+export function originFromAudiences(audiences: readonly string[] | null): string | null {
+  for (const aud of audiences ?? []) {
+    const trimmed = normalizeBaseUrl(aud).replace(/\/(wiki|mcp)$/, '');
+    if (trimmed !== normalizeBaseUrl(aud) && canonicalOrigin(trimmed) !== null) return trimmed;
+  }
+  return null;
 }
 
 /**
@@ -721,11 +755,29 @@ export class JavisOAuth implements JavisAuth {
     return access ? audiencesFromJwt(access) : null;
   }
 
+  /**
+   * Which account and server this device is signed in to, as one string
+   * (`<origin> <sub>`); null when not connected or the token has no readable
+   * `sub`. Read by the upload half to tell whether its memory describes rows
+   * in THIS account (review). Not a credential, and never checked for
+   * authenticity: the server checks the token, this only notices a switch.
+   */
+  accountKey(): string | null {
+    const access = this.readSecret(SECRET_ACCESS_TOKEN);
+    if (!access || !this.readSecret(SECRET_REFRESH_TOKEN)) return null;
+    const sub = decodeJwtClaims(access)?.['sub'];
+    if (typeof sub !== 'string' || sub === '') return null;
+    const origin = this.readSecret(SECRET_TOKEN_ORIGIN) ?? originFromAudiences(audiencesFromJwt(access));
+    const canonical = origin === null ? null : canonicalOrigin(origin);
+    return canonical === null ? null : `${canonical} ${sub}`;
+  }
+
   async connect(options: ConnectOptions = {}): Promise<void> {
     // Before binding a port or opening a browser: a refresh token (and, with
     // uploads on, a `wiki:write` grant) must never be minted over cleartext
-    // to another machine (origin.ts, review).
-    this.secureBaseUrl();
+    // to another machine (origin.ts, review). Snapshotted: the tokens this
+    // connect stores are bound to this origin and no other.
+    const origin = this.secureBaseUrl();
     const cached = this.opts.getClient();
     const cachedPort = cached ? portOf(cached.redirectUri) : undefined;
     const listen = this.opts.listen ?? startLoopbackListener;
@@ -774,7 +826,7 @@ export class JavisOAuth implements JavisAuth {
       if (!cached || cached.clientId !== client.clientId || cached.redirectUri !== client.redirectUri) {
         await this.opts.setClient(client);
       }
-      this.storeTokens(tokens);
+      this.storeTokens(tokens, origin);
       this.revoked = false;
       this.emit();
     } finally {
@@ -832,7 +884,12 @@ export class JavisOAuth implements JavisAuth {
 
   async getAccessToken(): Promise<string> {
     const access = this.readSecret(SECRET_ACCESS_TOKEN);
-    if (access && !isExpired(decodeJwtExpiry(access), this.now())) return access;
+    if (access) {
+      // Every caller sends the result to the CURRENT server URL, so it must
+      // be the one this token was issued by (review; `boundOrigin`).
+      this.boundOrigin();
+      if (!isExpired(decodeJwtExpiry(access), this.now())) return access;
+    }
     return this.refresh();
   }
 
@@ -855,8 +912,12 @@ export class JavisOAuth implements JavisAuth {
     // Also the https check (origin.ts, review): the refresh token is never
     // presented over cleartext to another machine. A plain Error, not an
     // auth error, so the stored sign-in survives until the URL is fixed.
-    const origin = this.secureBaseUrl();
+    //
+    // And the origin the refresh token was issued by (review): a `baseUrl`
+    // that another device, a collaborator or a vault template wrote into the
+    // synced `data.json` must not receive it. `boundOrigin` refuses first.
     const refreshToken = this.readSecret(SECRET_REFRESH_TOKEN);
+    const origin = refreshToken ? this.boundOrigin() : this.secureBaseUrl();
     const client = this.opts.getClient();
 
     if (!refreshToken || !client) {
@@ -911,7 +972,7 @@ export class JavisOAuth implements JavisAuth {
       throw new AuthRequiredError('Connect your Javis account in the plugin settings.');
     }
 
-    this.storeTokens(tokens);
+    this.storeTokens(tokens, origin);
     this.revoked = false;
     this.emit();
     return tokens.accessToken;
@@ -923,6 +984,11 @@ export class JavisOAuth implements JavisAuth {
     this.generation += 1;
 
     const refreshToken = this.readSecret(SECRET_REFRESH_TOKEN);
+    // Revoke at the origin that issued the token, never at whatever the URL
+    // says now (review): a changed `baseUrl` must not be handed the refresh
+    // token by the very button meant to get rid of it. Unknown → the URL, as
+    // before (a token from before the origin was stored).
+    const revokeAt = this.storedOrigin() ?? this.baseUrl();
     this.clearSecrets();
     this.revoked = false;
     try {
@@ -931,7 +997,7 @@ export class JavisOAuth implements JavisAuth {
       // Settings write failed; the tokens are gone either way, which is what
       // "disconnect" has to guarantee. Contract says this never throws.
     }
-    if (refreshToken) await this.revokeToken(refreshToken, this.baseUrl());
+    if (refreshToken) await this.revokeToken(refreshToken, revokeAt);
     this.emit();
   }
 
@@ -974,6 +1040,47 @@ export class JavisOAuth implements JavisAuth {
     return secureOrigin(this.baseUrl());
   }
 
+  /**
+   * The origin the stored tokens were issued by: the one `connect` or the
+   * last refresh stored, else — for a token stored before 0.2.0 kept one —
+   * the server its `aud` names. Null when neither says.
+   */
+  private storedOrigin(): string | null {
+    const stored = this.readSecret(SECRET_TOKEN_ORIGIN);
+    if (stored !== null) return stored;
+    const access = this.readSecret(SECRET_ACCESS_TOKEN);
+    return access ? originFromAudiences(audiencesFromJwt(access)) : null;
+  }
+
+  /**
+   * `secureBaseUrl()`, but only when it is the origin the stored tokens were
+   * issued by; throws `OriginChangedError` otherwise (review). The tokens are
+   * this device's (keychain) and the URL is the vault's (`data.json`, which
+   * syncs): before this, a `baseUrl` changed anywhere but the settings text
+   * field — which disconnects — received the bearer on the next request and
+   * the refresh token on the first 401. Since 0.2.0 that bearer can delete
+   * every uploaded source.
+   *
+   * A token with no stored origin and no readable `aud` (only an opaque
+   * token from an old build) is bound to the current URL on first use: there
+   * is nothing to compare against, and refusing would sign out every such
+   * device for a threat the token's own audience check already limits.
+   */
+  private boundOrigin(): string {
+    const current = this.secureBaseUrl();
+    const bound = this.storedOrigin();
+    if (bound === null) {
+      try {
+        this.opts.secrets.set(SECRET_TOKEN_ORIGIN, current);
+      } catch {
+        // An unwritable keychain: the next call binds again.
+      }
+      return current;
+    }
+    if (!sameOrigin(bound, current)) throw new OriginChangedError(bound, current);
+    return current;
+  }
+
   private now(): number {
     return this.opts.now ? this.opts.now() : Date.now();
   }
@@ -996,13 +1103,16 @@ export class JavisOAuth implements JavisAuth {
    * order would leave a usable access token with no way to renew it, and the
    * old refresh token is already dead server-side.
    */
-  private storeTokens(tokens: TokenResponse): void {
+  private storeTokens(tokens: TokenResponse, origin: string): void {
+    // The origin before either token: a token must never be in the keychain
+    // bound to the wrong server, even between two writes.
+    this.opts.secrets.set(SECRET_TOKEN_ORIGIN, origin);
     this.opts.secrets.set(SECRET_REFRESH_TOKEN, tokens.refreshToken);
     this.opts.secrets.set(SECRET_ACCESS_TOKEN, tokens.accessToken);
   }
 
   private clearSecrets(): void {
-    for (const id of [SECRET_ACCESS_TOKEN, SECRET_REFRESH_TOKEN]) {
+    for (const id of [SECRET_ACCESS_TOKEN, SECRET_REFRESH_TOKEN, SECRET_TOKEN_ORIGIN]) {
       try {
         this.opts.secrets.delete(id);
       } catch {
