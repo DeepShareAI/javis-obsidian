@@ -53,28 +53,54 @@ calls rather than spec text:
   (unreadable with no cached id, a hand-mangled id, an unclosed fence) keeps
   alive any row at its path; one at no known path holds **every** delete
   (`unreadable-ambiguous`). Path-presence is *not* granted by a readable note
-  with a different, valid id: that note proves the row's note is gone. (The
-  plan's wording applied it to any note; this is the narrower reading.)
+  with a different, valid id: that note proves the row's note is gone. A
+  readable note with **no** id at a live row's path (a 0-byte sync glitch, a
+  cleared note, frontmatter rewritten by another plugin) is that row's note:
+  blank → nothing is sent and nothing deleted; otherwise the same id is
+  written back (`adopt`) and the edit goes through the normal put and
+  shrink checks. (Review fix: before, such a note let the row be deleted and
+  the note re-ingested as a new source.)
 - **D-PLAN-8** An emptied or 80%-shrunk note is held only when the mass-change
   threshold trips, per §F.3.5 "held with the deletes". A single blank edit
   below the threshold is sent. The stricter alternative (always hold) is one
   line in `planUpload`.
 - **D-PLAN-9** A blank note with no id is not stamped or uploaded.
-- **D-PLAN-11** An invalid folder selection plans nothing at all — and so does
-  an empty one. Consequence: removing the *last* folder stops uploads without
-  removing anything from Javis; removing one of several removes its notes after
-  the guards (D-PLAN-13). Worth a product decision.
+- **D-PLAN-11** An invalid folder selection plans nothing at all.
+- **D-PLAN-13** Deselecting a folder removes its notes after the debounce and
+  the mass cap, **the last folder included** (review fix: the empty selection
+  used to plan nothing, so the settings text and README were false for it).
+  The upload half is skipped with no request only when no folder is selected
+  *and* nothing uploaded is remembered (D-RUN-2).
 - **D-RUN-4** Network errors and 429-after-4-retries stop the run, in addition
   to §F.2's auth failures; 400/409/413/5xx are per-note.
 - **D-RUN-6** A 409 is reported, not restamped in the same run; the next run's
   listing shows the row deleted and restamps then.
 - Stamps and restamps are followed by their PUT in the same run; a copy or a
   deleted-id carrier is uploaded as a new source immediately.
-- **D-AUTH-1** A connect with no upload folder sends exactly 0.1.x's request
-  (no `resource`), so old servers keep working. Send `resource` always once the
-  §C.3 compatibility window closes (0.3.0).
-- **D-RUN-3** A *background* run whose token visibly lacks `wiki:write` does not
-  try the upload; interactive runs try, and a 403 drives one step-up.
+- **D-AUTH-1, changed in review.** Every connect sends `resource=<origin>/wiki`
+  (§C.3 is unconditional); the union scope is added only once a folder is
+  selected. A read-only 0.2.0 connect used to send no resource and got an
+  `/mcp`-audience grant that a refresh can never move, i.e. every read-only
+  install would break when the server drops the one-release grace on
+  `/wiki/export`. Pre-PR 1 servers ignore the parameter. A read-only device
+  still on the old audience sees a one-line reconnect hint in settings.
+- **D-RUN-3, widened in review.** "Cannot write" = the decodable scope lacks
+  `wiki:write` **or** the decodable `aud` is not `/wiki`. A background run
+  then does not try. An interactive run steps up **before its first request**
+  (so no note is stamped by a run that then gets a 403 and a declined
+  consent), and a declined write grant stops it there. Undecodable tokens are
+  tried, and a 403 drives the one step-up.
+- **Folder validation is case-insensitive** (review fix): on APFS/NTFS a
+  `sources` folder is the download's `Sources`. Notes carrying the download's
+  `javis_slug`/`javis_type` are skipped as `wiki-page` wherever they sit.
+- **Uploads refuse `http:`** unless the host is loopback (review fix): note
+  text and a `wiki:write` bearer must not go in the clear.
+- **A run that stops before planning keeps the previous held / skipped /
+  waiting lists** in `lastUpload` (review fix), so "Review pending changes"
+  survives a network blip.
+- **`data.json` is sanitized by a tested pure function** (`settings-load.ts`);
+  a malformed memory entry is repaired toward "unknown" (e.g. a non-number
+  `missingSince` → null), which can only delay a delete.
 
 ## Wire contract to confirm against PR 3 (D-WIRE-1..4)
 
@@ -89,7 +115,9 @@ calls rather than spec text:
 - 403 carries `WWW-Authenticate: Bearer error="insufficient_scope", …`.
   **Please make an old-audience token on these routes answer 403
   insufficient_scope, not 401**: a 401 is treated as expiry (refresh, retry,
-  then "reconnect"), which never triggers the step-up.
+  then "reconnect"), which never triggers the step-up. The plugin now steps up
+  before the first request whenever it can decode an `/mcp` audience, so this
+  matters only for tokens it cannot decode.
 - **D-HASH-5** `body_hash = sha256(utf8(text))` where `text` is exactly the sent
   string. Notes containing a lone UTF-16 surrogate are not uploaded; the server
   should not need `surrogatepass`.
@@ -112,7 +140,7 @@ calls rather than spec text:
 Measured on this branch, 2026-09-24:
 
 ```
-vitest run       17 files, 503 tests passed (baseline 290)
+vitest run       17 files, 542 tests passed (baseline 290; 503 before review fixes)
 tsc -noEmit      exit 0
 esbuild prod     exit 0
 ```

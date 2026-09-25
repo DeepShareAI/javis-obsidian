@@ -356,3 +356,33 @@ Commit: `docs: README upload disclosure (§F.5); chore: 0.2.0`. These are two co
 - Fixing `JavisWikiApiClient`'s captured `baseUrl` (D-API-2) and Phase 1 `writeFrontmatter` reformatting (spec §L.2 follow-up).
 - Sending `resource` on read-only connects (D-AUTH-1 follow-up for 0.3.0).
 - Any server code. PR 3 must implement D-WIRE-1..4, or this plan's client changes to match it.
+
+## Amendments after adversarial review (2026-09-24)
+
+Confirmed review findings changed these decisions; the entries above are left
+as written so the history reads, and the code follows this section.
+
+- **D-AUTH-1** Every connect sends `resource=<baseUrl>/wiki` (§C.3 is
+  unconditional). The union scope is still sent only with a folder selected.
+  Reason: an `/mcp`-audience grant can never be moved by a refresh, so the
+  deferred "0.3.0 follow-up" would have stranded every read-only 0.2.0 install
+  when `/wiki/export` drops the old audience.
+- **D-RUN-3** "Cannot write" also covers a decodable `aud` that is not `/wiki`.
+  Interactive runs step up *before* the first request (no stamp ahead of a
+  403); a declined write grant stops the run there (`uploadOnce` rule 7).
+- **D-PLAN-4** Applied as written for id-less notes: a readable note with no
+  id at a live, uncarried row's server or memory path keeps the row present;
+  blank → skip, otherwise `put` with `adopt: true` (the same id is written
+  back, then the ordinary changed/moved/shrink logic; `restore-id` when
+  unchanged). A note carrying a different valid id still does not vouch.
+- **D-PLAN-13 / D-RUN-2** An empty selection is planned like any other, so
+  deselecting the last folder removes its notes behind the debounce and the
+  cap; the upload half is skipped only with no folder *and* empty memory.
+  With no folder, memory for ids without a live row is dropped.
+- **D-FOLD-1** Case-insensitive throughout; plus notes carrying `javis_slug` /
+  `javis_type` are skipped as `wiki-page`.
+- **D-WIRE / sources client** `http:` is refused unless the host is loopback.
+- **D-RUN-10** A run that stops before planning keeps the previous
+  `held`/`skipped`/`waiting` in `lastUpload` (`UploadResult.planned`).
+- **Task 14 `loadSettings`** is `sanitizeSettings` in `settings-load.ts`,
+  tested directly; malformed memory entries are repaired toward "unknown".
