@@ -4,6 +4,8 @@
  * Plus the 0.2.0 release metadata.
  */
 
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { NetworkError, SyncCancelledError } from '../src/shell/errors';
@@ -135,5 +137,21 @@ describe('runDownloadThenUpload (D-RUN-1)', () => {
       },
     });
     expect(order).toEqual(['download', 'upload']);
+  });
+});
+
+describe('0.2.0 release metadata (plan D-REL-1)', () => {
+  const read = (file: string) => JSON.parse(readFileSync(join(__dirname, '..', file), 'utf8'));
+
+  it('bumps the version everywhere and leaves minAppVersion alone', () => {
+    const manifest = read('manifest.json');
+    const pkg = read('package.json');
+    const lock = read('package-lock.json');
+    expect(manifest.version).toBe('0.2.0');
+    expect(pkg.version).toBe('0.2.0');
+    expect(lock.version).toBe('0.2.0');
+    expect(lock.packages[''].version).toBe('0.2.0');
+    expect(read('versions.json')['0.2.0']).toBe('1.11.4');
+    expect(manifest.minAppVersion).toBe('1.11.4');
   });
 });
