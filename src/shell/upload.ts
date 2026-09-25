@@ -234,6 +234,8 @@ export async function uploadOnce(deps: UploadDeps): Promise<UploadResult> {
     invalidFolders: [],
     undoReports: [],
     serverFailures: [],
+    sentIds: [],
+    retryIds: [],
     counts: {},
     nextMemory: cloneMemory(deps.memory),
     stoppedBy: null,
@@ -314,6 +316,7 @@ export async function uploadOnce(deps: UploadDeps): Promise<UploadResult> {
       configDir,
       now: deps.now,
       reuploadAll: deps.reuploadAll,
+      reuploadIds: deps.reuploadIds ?? [],
       release: deps.release,
     });
     result.planned = true;
@@ -335,6 +338,7 @@ export async function uploadOnce(deps: UploadDeps): Promise<UploadResult> {
       } catch (error) {
         if (isRunLevel(error)) throw error;
         result.failures.push({ path: action.path, message: messageOf(error) });
+        if (action.kind === 'put' && action.reason === 'reupload') result.retryIds.push(action.sourceId);
       }
       done += 1;
       deps.onProgress?.(done, plan.actions.length);
@@ -505,6 +509,7 @@ async function execute(
     case 'unchanged':
       if (outcome.kind === 'accepted') result.uploaded += 1;
       else result.unchanged += 1;
+      result.sentIds.push(sourceId);
       result.nextMemory[sourceId] = {
         path: action.path,
         hash: noteHash(text),
@@ -532,6 +537,22 @@ async function execute(
 // ---------------------------------------------------------------------------
 // Reporting
 // ---------------------------------------------------------------------------
+
+/**
+ * The ids still owed a re-send after this run (review): the previous owed
+ * ids, minus every id that went out, plus every re-send that failed in a way
+ * worth retrying — restricted to ids this vault still remembers, so a
+ * deleted note is not owed for ever.
+ */
+export function nextPendingReupload(
+  previous: readonly string[],
+  result: Pick<UploadResult, 'sentIds' | 'retryIds' | 'nextMemory'>,
+): string[] {
+  const owed = new Set(previous);
+  for (const id of result.sentIds) owed.delete(id);
+  for (const id of result.retryIds) owed.add(id);
+  return [...owed].filter((id) => result.nextMemory[id] !== undefined).sort();
+}
 
 /** One line for the status bar: "3 uploaded, 1 unchanged, 2 removed, 4 held, 1 failed". */
 export function summarizeUpload(result: UploadResult): string {

@@ -195,6 +195,13 @@ describe('planUpload: put', () => {
     expect(plan.actions).toMatchObject([{ kind: 'put', reason: 'reupload' }]);
   });
 
+  it('re-sends only the unchanged notes whose ids are still owed a re-upload (review)', () => {
+    const a = synced(1);
+    const b = synced(2);
+    const plan = planUpload([a.note, b.note], [a.row, b.row], {}, settings({ reuploadIds: [id(2)] }));
+    expect(plan.actions).toMatchObject([{ kind: 'put', sourceId: id(2), reason: 'reupload' }]);
+  });
+
   it('skips a blank note with an id and no server row', () => {
     const plan = planUpload([note('Journal/a.md', id(1), { blank: true })], [], {}, settings());
     expect(plan.actions).toEqual([]);

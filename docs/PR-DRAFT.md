@@ -112,6 +112,8 @@ calls rather than spec text:
 - **A run that stops before planning keeps the previous held / skipped /
   waiting lists** in `lastUpload` (review fix), so "Review pending changes"
   survives a network blip.
+- **Re-upload all finishes the job** (review fix): a re-send whose PUT got a
+  5xx stays owed by id (`pendingReuploadIds`) and is re-sent on later runs.
 - **Server-side distill failures are named** (review fix): this vault's rows the
   poller left `failed` are listed in settings with their `last_error` (§D.5
   "shows its error"), not just counted.

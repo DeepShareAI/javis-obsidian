@@ -160,6 +160,12 @@ export interface PlanSettings {
   now: number;
   /** "Re-upload all": send notes whose hash and path are unchanged (D-PLAN-15). */
   reuploadAll: boolean;
+  /**
+   * Ids still owed a re-send from an earlier "Re-upload all" whose PUT
+   * failed (review): sent even though unchanged, like `reuploadAll` for just
+   * these notes. Optional; absent means none.
+   */
+  reuploadIds?: readonly string[];
   /** Hold keys the user confirmed in "Review pending changes" (D-PLAN-14). */
   release: readonly string[];
 }
@@ -366,6 +372,7 @@ export function planUpload(
   const ours = (id: string): boolean => nextMemory[id] !== undefined;
   const threshold = massChangeThreshold(liveRows.filter((r) => ours(r.source_id.toLowerCase())).length);
   const release = new Set(settings.release);
+  const reuploadIds = new Set((settings.reuploadIds ?? []).map((i) => i.toLowerCase()));
 
   const actions: UploadAction[] = [];
   const skipped: SkippedNote[] = inSelection
@@ -580,7 +587,7 @@ export function planUpload(
       }
       const changed = hash !== row.body_hash;
       const moved = note.path !== row.vault_path;
-      if (!changed && !moved && !settings.reuploadAll) continue;
+      if (!changed && !moved && !settings.reuploadAll && !reuploadIds.has(id)) continue;
       const put: Extract<UploadAction, { kind: 'put' }> = {
         kind: 'put',
         path: note.path,

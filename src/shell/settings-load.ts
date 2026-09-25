@@ -157,6 +157,9 @@ export function sanitizeSettings(stored: unknown): JavisSettings {
   s.uploadMemory = splitMissing(sanitizeMemory(s.uploadMemory)).synced;
   s.uploadOnEdit = s.uploadOnEdit === true;
   s.pendingReuploadAll = s.pendingReuploadAll === true;
+  s.pendingReuploadIds = Array.isArray(s.pendingReuploadIds)
+    ? s.pendingReuploadIds.filter((i): i is string => typeof i === 'string').map((i) => i.toLowerCase()).filter(isUuid)
+    : [];
   s.lastUpload = lastUpload(s.lastUpload);
   return s;
 }

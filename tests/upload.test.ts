@@ -26,7 +26,14 @@ import {
   ProtocolError,
   RateLimitedError,
 } from '../src/shell/errors';
-import { describeNote, lenientSourceId, summarizeUpload, uploadOnce, uploadReport } from '../src/shell/upload';
+import {
+  describeNote,
+  lenientSourceId,
+  nextPendingReupload,
+  summarizeUpload,
+  uploadOnce,
+  uploadReport,
+} from '../src/shell/upload';
 
 const T0 = 1_800_000_000_000;
 
@@ -591,6 +598,38 @@ describe('uploadOnce: nothing to do without a valid selection', () => {
   });
 });
 
+describe('Re-upload all survives a failed PUT (review)', () => {
+  it('records which re-sends failed and which notes were sent', async () => {
+    const files = { 'Journal/a.md': stamped(1), 'Journal/b.md': stamped(2), 'Journal/c.md': stamped(3) };
+    const { api, deps } = setup(files);
+    api.listing = { sources: [1, 2, 3].map((n) => row(id(n), `Journal/${'abc'[n - 1]}.md`, stamped(n))), counts: {} };
+    api.putScript.set(id(2), [new HttpError(503, 'unavailable')]);
+    api.putScript.set(id(3), [{ kind: 'rejected', message: 'bad path' }]);
+    const result = await uploadOnce(deps({ reuploadAll: true }));
+    expect(result.stoppedBy).toBeNull();
+    expect(result.sentIds).toEqual([id(1)]);
+    // A 5xx is worth retrying; a 400 is the note's own problem and is shown once.
+    expect(result.retryIds).toEqual([id(2)]);
+  });
+
+  it('nextPendingReupload: keeps the failed ids until they go out, and forgets ones no longer remembered', () => {
+    const memory = { [id(1)]: null, [id(2)]: null, [id(4)]: null } as unknown as Record<string, never>;
+    expect(nextPendingReupload([id(4), id(9)], { retryIds: [id(2)], sentIds: [id(1)], nextMemory: memory })).toEqual([
+      id(2),
+      id(4),
+    ]);
+    expect(nextPendingReupload([id(2)], { retryIds: [], sentIds: [id(2)], nextMemory: memory })).toEqual([]);
+  });
+
+  it('a later run re-sends only the owed ids', async () => {
+    const { api, deps } = setup({ 'Journal/a.md': stamped(1), 'Journal/b.md': stamped(2) });
+    api.listing = { sources: [row(id(1), 'Journal/a.md', stamped(1)), row(id(2), 'Journal/b.md', stamped(2))], counts: {} };
+    const result = await uploadOnce(deps({ reuploadIds: [id(2)] }));
+    expect(api.calls).toEqual(['list', `put ${id(2)}`]);
+    expect(result.sentIds).toEqual([id(2)]);
+  });
+});
+
 describe('summarizeUpload', () => {
   const base = {
     uploaded: 0,
@@ -604,6 +643,8 @@ describe('summarizeUpload', () => {
     invalidFolders: [],
     undoReports: [],
     serverFailures: [],
+    sentIds: [],
+    retryIds: [],
     counts: {},
     nextMemory: {},
     stoppedBy: null,

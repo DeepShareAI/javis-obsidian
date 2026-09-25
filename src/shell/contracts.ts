@@ -592,6 +592,8 @@ export interface UploadDeps {
   /** `crypto.randomUUID` in the plugin; the core never generates an id. */
   newId: () => string;
   reuploadAll: boolean;
+  /** Ids owed a re-send after an earlier "Re-upload all" PUT failed (review). */
+  reuploadIds?: readonly string[];
   release: readonly string[];
   signal?: AbortSignal;
   /**
@@ -642,6 +644,14 @@ export interface UploadResult {
    * vault owns, D-PLAN-18).
    */
   serverFailures: { path: string; message: string }[];
+  /** Ids whose PUT this run succeeded (202 or 200). */
+  sentIds: string[];
+  /**
+   * Ids of re-sends ("Re-upload all", or owed from one) whose PUT failed in a
+   * way worth retrying — a 5xx, one note's vault error — rather than a 400
+   * about the note itself (review). The caller keeps them owed.
+   */
+  retryIds: string[];
   /** Server rows per status, from this run's listing. */
   counts: Record<string, number>;
   /** Persist this as `settings.uploadMemory`, whatever else happened. */
@@ -747,6 +757,12 @@ export interface JavisSettings {
   lastUpload: LastUploadReport | null;
   /** "Re-upload all" survives a run that stops early; cleared by a clean run. */
   pendingReuploadAll: boolean;
+  /**
+   * Ids a "Re-upload all" did not get through (a 5xx on their PUT). Re-sent on
+   * later runs until each goes out; before review the flag above was cleared
+   * by a run that merely did not STOP, so those notes were never re-sent.
+   */
+  pendingReuploadIds: string[];
 }
 
 export const DEFAULT_SETTINGS: JavisSettings = {
@@ -764,6 +780,7 @@ export const DEFAULT_SETTINGS: JavisSettings = {
   uploadMemory: {},
   lastUpload: null,
   pendingReuploadAll: false,
+  pendingReuploadIds: [],
 };
 
 /**

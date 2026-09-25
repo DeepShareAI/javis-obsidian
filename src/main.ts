@@ -59,6 +59,7 @@ import {
   EDIT_DEBOUNCE_MS,
   SelfWriteTracker,
   createTrailingDebounce,
+  nextPendingReupload,
   runDownloadThenUpload,
   summarizeUpload,
   uploadOnce,
@@ -414,6 +415,7 @@ export default class JavisWikiSyncPlugin extends Plugin {
       now: Date.now(),
       newId: () => crypto.randomUUID(),
       reuploadAll,
+      reuploadIds: this.settings.pendingReuploadIds,
       release: opts.release ?? [],
       signal,
       // D-AUTH-4: only a person who just clicked may be sent to the browser.
@@ -430,8 +432,12 @@ export default class JavisWikiSyncPlugin extends Plugin {
     this.settings.uploadMemory = synced;
     this.#saveMissing(missing);
     this.settings.lastUpload = uploadReport(this.settings.lastUpload, result, summary, new Date().toISOString());
+    // A run that did not stop has tried every note once; the notes whose
+    // re-send failed stay owed by id, so clearing the flag no longer drops
+    // them (review).
     if (result.stoppedBy === null && result.invalidFolders.length === 0) this.settings.pendingReuploadAll = false;
     else if (opts.reuploadAll) this.settings.pendingReuploadAll = true;
+    this.settings.pendingReuploadIds = nextPendingReupload(this.settings.pendingReuploadIds, result);
     await this.saveSettings();
 
     this.#noticeUpload(result, summary, interactive, previousHeld);
