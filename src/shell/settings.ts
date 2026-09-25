@@ -421,11 +421,14 @@ export class JavisSettingTab extends PluginSettingTab {
         last.invalidFolders.map((e) => `${e.folder || '(vault root)'}: ${e.reason}`),
       );
       renderList(containerEl, 'Failed', last.failures.map((f) => `${f.path}: ${f.message}`));
-      // §D.5: a note the server gave up on is named here with its error; it
-      // is retried after the note is edited, or on "Re-upload all".
+      // §D.5: a note the server gave up on is named here with its error. Only
+      // an edit retries it: §E answers an equal-hash PUT with `200 unchanged`
+      // and updates just the path and title, so "Re-upload all" re-sends the
+      // note without re-queuing it (review). Promising otherwise sent users
+      // to a button that cannot help.
       renderList(
         containerEl,
-        'Not added to the wiki (edit the note or use Re-upload all to retry)',
+        'Not added to the wiki (edit the note to retry)',
         last.serverFailures.map((f) => `${f.path}: ${f.message}`),
       );
       for (const reason of ['oversize', 'unreadable', 'unstampable', 'invalid-id', 'invalid-chars', 'wiki-page'] as const) {
