@@ -142,7 +142,7 @@ export interface PlanSettings {
 // Outputs
 // ---------------------------------------------------------------------------
 
-export type PutReason = 'new' | 'changed' | 'moved' | 'reupload';
+export type PutReason = 'new' | 'changed' | 'moved' | 'reupload' | 'restore-id';
 
 export type UploadAction =
   /** Give the note an id, then upload it as a new source. */
@@ -153,7 +153,20 @@ export type UploadAction =
    * resurrected (§E 409).
    */
   | { kind: 'restamp'; path: string; oldId: string; reason: 'copy' | 'deleted' }
-  | { kind: 'put'; path: string; sourceId: string; hash: string; bytes: number; reason: PutReason }
+  | {
+      kind: 'put';
+      path: string;
+      sourceId: string;
+      hash: string;
+      bytes: number;
+      reason: PutReason;
+      /**
+       * The note carries no id, but sits at this live row's path: write
+       * `sourceId` back into it before the PUT (D-PLAN-4, review). Present
+       * only when true.
+       */
+      adopt?: true;
+    }
   /** `path` is the server's last known path, for display. */
   | { kind: 'delete'; sourceId: string; path: string };
 
@@ -285,20 +298,57 @@ export function planUpload(
 
   // -- presence ------------------------------------------------------------
   // A row is present when a listed note carries its id (hints included), or
-  // when a note whose identity we could not read sits at the row's server
-  // path or remembered path.
+  // when a listed note that carries no readable id of its own sits at the
+  // row's server path or remembered path (D-PLAN-4: "any listed note
+  // (readable or not)"). Two kinds of note do that:
+  //
+  // - one whose identity we could not read at all (unreadable, hand-mangled
+  //   id, unclosed fence): it might be the row's note, so the row stays;
+  // - a readable note with NO id line — a sync glitch that left a 0-byte file,
+  //   a select-all-delete, another plugin rewriting the frontmatter without
+  //   our line. Before review this counted as absent: the row went missing,
+  //   the debounce ran out, and the note's source was deleted (an undo), then
+  //   re-ingested as a brand-new source once its text came back — exactly
+  //   the truncated-file failure §F.3.5 exists to stop. Now such a note is
+  //   taken to BE that source: its id is written back (`adopt`) and the edit
+  //   goes through the ordinary put path, shrink guard included.
+  //
+  // A note carrying a different valid id does not vouch for a row at its
+  // path: it is that other source, and letting it vouch would keep a row
+  // whose note was deleted and replaced alive for ever.
   const presentIds = new Set<string>();
   const unknownPaths = new Set<string>();
   for (const note of listed) {
     if (note.sourceId !== null) presentIds.add(note.sourceId);
     if (!isKnown(note)) unknownPaths.add(note.path);
   }
+  const carried = new Set(presentIds);
   const knownPaths = new Set<string>();
   for (const row of server) knownPaths.add(row.vault_path);
   for (const entry of Object.values(memory)) knownPaths.add(entry.path);
   for (const row of liveRows) {
     const id = row.source_id.toLowerCase();
     if (unknownPaths.has(row.vault_path) || (memory[id] && unknownPaths.has(memory[id]!.path))) presentIds.add(id);
+  }
+  // path of an id-less readable note → the uncarried live row it stands for.
+  // A server-path match beats a memory-path match; ties go to the smallest
+  // id, so two devices over the same vault adopt the same row.
+  const adoptAt = new Map<string, string>();
+  const idLess = new Set(listed.filter((n) => isKnown(n) && n.sourceId === null).map((n) => n.path));
+  const adoptable = liveRows
+    .map((row) => row.source_id.toLowerCase())
+    .filter((id) => !carried.has(id))
+    .sort();
+  const adopted = new Set<string>();
+  for (const pass of ['server', 'memory'] as const) {
+    for (const id of adoptable) {
+      if (adopted.has(id)) continue;
+      const path = pass === 'server' ? rows.get(id)!.vault_path : memory[id]?.path;
+      if (path === undefined || !idLess.has(path) || adoptAt.has(path)) continue;
+      adoptAt.set(path, id);
+      adopted.add(id);
+      presentIds.add(id);
+    }
   }
   // Rule 1: an unidentified note at no known path could be any row, renamed.
   const ambiguous = listed.some(
@@ -317,8 +367,32 @@ export function planUpload(
       // Known, readable, no id.
       if (note.blank) {
         // D-PLAN-9: stamping every fresh Untitled.md is an unrequested write,
-        // and uploading nothing costs an LLM call.
+        // and uploading nothing costs an LLM call. At a tracked row's path
+        // this is also the 0-byte sync glitch: the row stays present (above),
+        // the file is not touched, and nothing is sent until text returns.
         skipped.push({ path: note.path, reason: 'blank' });
+        continue;
+      }
+      const adoptId = adoptAt.get(note.path);
+      if (adoptId !== undefined) {
+        const row = rows.get(adoptId)!;
+        const hash = note.hash!;
+        const changed = hash !== row.body_hash;
+        const moved = note.path !== row.vault_path;
+        const put: Extract<UploadAction, { kind: 'put' }> = {
+          kind: 'put',
+          path: note.path,
+          sourceId: adoptId,
+          hash,
+          bytes: note.bytes,
+          reason: changed ? 'changed' : moved ? 'moved' : 'restore-id',
+          adopt: true,
+        };
+        // D-PLAN-8, as for any put against a live row (blank was handled above).
+        const entry = memory[adoptId];
+        const shrank = entry?.bytes != null && note.bytes < SHRINK_RATIO * entry.bytes;
+        if (changed && shrank) suspicious.push(put);
+        else actions.push(put);
         continue;
       }
       actions.push({ kind: 'stamp', path: note.path });

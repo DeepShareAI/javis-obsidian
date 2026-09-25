@@ -378,6 +378,39 @@ describe('uploadOnce: step-up once (§C.7, D-AUTH-4)', () => {
   });
 });
 
+describe('uploadOnce: an id-less note at a tracked path gets its id back (D-PLAN-4, review)', () => {
+  it('writes the row id into the note, then PUTs that id', async () => {
+    const body = 'note 1\n';
+    const { vault, api, deps } = setup({ 'Journal/a.md': body });
+    api.listing = { sources: [row(id(1), 'Journal/a.md', body)], counts: {} };
+    const result = await uploadOnce(deps({ memory: { [id(1)]: { path: 'Journal/a.md', hash: null, bytes: 7, missingSince: T0 - DEBOUNCE_MS } } }));
+    expect(readSourceId(vault.files.get('Journal/a.md')!)).toEqual({ id: id(1), valid: true });
+    expect(api.calls).toEqual(['list', `put ${id(1)}`]);
+    expect(result.stamped).toBe(1);
+    expect(result.nextMemory[id(1)]!.missingSince).toBeNull();
+  });
+
+  it('leaves a 0-byte file alone and deletes nothing', async () => {
+    const { vault, api, deps } = setup({ 'Journal/a.md': '' });
+    api.listing = { sources: [row(id(1), 'Journal/a.md', 'note 1\n')], counts: {} };
+    const result = await uploadOnce(deps({ memory: { [id(1)]: { path: 'Journal/a.md', hash: null, bytes: 5000, missingSince: T0 - DEBOUNCE_MS } } }));
+    expect(api.calls).toEqual(['list']);
+    expect(vault.files.get('Journal/a.md')).toBe('');
+    expect(result.skipped).toEqual([{ path: 'Journal/a.md', reason: 'blank' }]);
+  });
+
+  it('does not PUT when another device wrote a different id first', async () => {
+    const body = 'note 1\n';
+    const { vault, api, deps } = setup({ 'Journal/a.md': body });
+    api.listing = { sources: [row(id(1), 'Journal/a.md', body)], counts: {} };
+    vault.beforeProcess = (path) => vault.files.set(path, stamped(9, body));
+    const result = await uploadOnce(deps());
+    expect(api.calls).toEqual(['list']);
+    expect(result.failures).toHaveLength(1);
+    expect(readSourceId(vault.files.get('Journal/a.md')!)?.id).toBe(id(9));
+  });
+});
+
 describe('uploadOnce: step-up before anything is written (review of §C.7)', () => {
   it('a token that visibly cannot write steps up before the first request, so no note is stamped first', async () => {
     let canWrite = false;

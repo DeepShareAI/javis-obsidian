@@ -396,7 +396,33 @@ async function execute(
 
   let text: string;
   let sourceId: string;
-  if (action.kind === 'put') {
+  if (action.kind === 'put' && action.adopt === true) {
+    // The note lost its id line but sits at this source's path: write the
+    // SAME id back before the PUT (rule 1), so it stays one source rather
+    // than being deleted and re-ingested as a new one (D-PLAN-4, review).
+    const want = action.sourceId;
+    deps.selfWrites?.mark(action.path);
+    text = await deps.vault.processText(action.path, (content) => {
+      const r = stampText(content, want);
+      return r.kind === 'ok' ? r.text : content;
+    });
+    const written = readSourceId(text);
+    if (written === null || !written.valid) {
+      result.skipped.push({ path: action.path, reason: written === null ? 'unstampable' : 'invalid-id' });
+      return;
+    }
+    if (written.id !== want) {
+      // Another device stamped it between our read and our write. Its id is
+      // on disk now; the next run plans from that, one decision per run.
+      result.failures.push({
+        path: action.path,
+        message: 'another device gave this note an id first; it will be sorted out on the next sync',
+      });
+      return;
+    }
+    sourceId = want;
+    result.stamped += 1;
+  } else if (action.kind === 'put') {
     const read = texts.get(action.path);
     if (read === undefined) throw new Error('the note was not read in this run');
     text = read;

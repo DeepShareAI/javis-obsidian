@@ -412,6 +412,90 @@ describe('planUpload: unreadable is unknown (§F.3.2)', () => {
   });
 });
 
+describe('planUpload: an id-less note at a tracked path is that source (D-PLAN-4, review)', () => {
+  const r = row(id(1), 'Journal/a.md');
+  const memory = { [id(1)]: mem('Journal/a.md', { bytes: 5000 }) };
+
+  it('a 0-byte file at the row path is neither a delete nor a stamp, however long it stays', () => {
+    const zero = note('Journal/a.md', null, { blank: true, bytes: 0, hash: hashOf('empty') });
+    const run1 = planUpload([zero], [r], memory, settings({ now: T0 }));
+    const run2 = planUpload([zero], [r], run1.nextMemory, settings({ now: T0 + 10 * DEBOUNCE_MS }));
+    for (const plan of [run1, run2]) {
+      expect(plan.actions).toEqual([]);
+      expect(plan.held).toEqual([]);
+      expect(plan.waiting).toEqual([]);
+      expect(plan.skipped).toEqual([{ path: 'Journal/a.md', reason: 'blank' }]);
+    }
+    expect(run2.nextMemory[id(1)]!.missingSince).toBeNull();
+  });
+
+  it('a note whose id line was removed gets the SAME id back, with no delete and no new source', () => {
+    const stripped = note('Journal/a.md', null, { hash: r.body_hash });
+    const plan = planUpload([stripped], [r], missingLongAgo([r]), settings());
+    expect(plan.actions).toEqual([
+      { kind: 'put', path: 'Journal/a.md', sourceId: id(1), hash: r.body_hash, bytes: 1000, reason: 'restore-id', adopt: true },
+    ]);
+    expect(plan.waiting).toEqual([]);
+    expect(plan.nextMemory[id(1)]!.missingSince).toBeNull();
+  });
+
+  it('an id-less edit at the path is a changed put of that source, and a shrink is still suspicious', () => {
+    const edited = note('Journal/a.md', null, { hash: hashOf('new'), bytes: 4000 });
+    expect(planUpload([edited], [r], memory, settings()).actions).toMatchObject([
+      { kind: 'put', sourceId: id(1), reason: 'changed', adopt: true },
+    ]);
+    // Shrunk below 20%, with deletes up to the threshold: held with them.
+    const shrunk = note('Journal/a.md', null, { hash: hashOf('tiny'), bytes: 100 });
+    const gone = syncedMany(5, 'Inbox', 10);
+    const plan = planUpload([shrunk], [r, ...gone.rows], { ...memory, ...missingLongAgo(gone.rows) }, settings());
+    expect(plan.actions).toEqual([]);
+    expect(plan.held.map((h) => h.key)).toContain(`put:${id(1)}`);
+    expect(plan.held.find((h) => h.key === `put:${id(1)}`)!.action).toMatchObject({ adopt: true });
+  });
+
+  it('matches the remembered path too, when the server path is older', () => {
+    const moved = row(id(1), 'Journal/old.md');
+    const plan = planUpload(
+      [note('Journal/a.md', null, { hash: moved.body_hash })],
+      [moved],
+      { [id(1)]: mem('Journal/a.md', { missingSince: T0 - DEBOUNCE_MS }) },
+      settings(),
+    );
+    expect(plan.actions).toMatchObject([{ kind: 'put', sourceId: id(1), reason: 'moved', adopt: true }]);
+  });
+
+  it('does not adopt when another listed note carries the id: that one is the source, this one is new', () => {
+    const plan = planUpload(
+      [note('Journal/a.md', null), note('Journal/renamed.md', id(1), { hash: r.body_hash })],
+      [r],
+      {},
+      settings(),
+    );
+    expect(plan.actions).toEqual([
+      { kind: 'stamp', path: 'Journal/a.md' },
+      { kind: 'put', path: 'Journal/renamed.md', sourceId: id(1), hash: r.body_hash, bytes: 1000, reason: 'moved' },
+    ]);
+  });
+
+  it('a note carrying a DIFFERENT id at the path does not keep the old row alive', () => {
+    const newer = row(id(2), 'Journal/a.md');
+    const plan = planUpload(
+      [note('Journal/a.md', id(2), { hash: newer.body_hash })],
+      [r, newer],
+      missingLongAgo([r]),
+      settings(),
+    );
+    expect(plan.actions).toEqual([{ kind: 'delete', sourceId: id(1), path: 'Journal/a.md' }]);
+  });
+
+  it('never adopts a deleted row: the note is stamped as new', () => {
+    const dead = row(id(1), 'Journal/a.md', { deleted: true, status: 'deleted' });
+    expect(planUpload([note('Journal/a.md', null)], [dead], {}, settings()).actions).toEqual([
+      { kind: 'stamp', path: 'Journal/a.md' },
+    ]);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Task 7: vanished folder, mass cap, suspicious edits, release
 // ---------------------------------------------------------------------------
