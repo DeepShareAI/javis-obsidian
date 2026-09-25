@@ -102,8 +102,10 @@ calls rather than spec text:
   iCloud dataless files makes a run slow (10 s per file) though never unsafe.
 - `JavisWikiApiClient` still captures `baseUrl` at construction (D-API-2,
   pre-existing, out of scope); the new sources client reads it live.
-- Server-side memory of `missingSince` is per device (`data.json` replicates,
-  but each device re-derives holds every run).
+- `uploadMemory` (with `missingSince`) lives in `data.json`, which replicates
+  between devices. Two devices can overwrite each other's copy; the worst case
+  is a restarted debounce, i.e. a later delete, never an earlier one. Holds are
+  re-derived by each device on every run.
 
 ## Tests
 
