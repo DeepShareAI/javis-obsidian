@@ -22,17 +22,41 @@
  *   can otherwise land two runs on `vault.process` for the same file, which is
  *   the write race §F.2 exists to avoid. `#running` is the whole mechanism, and
  *   every entry point goes through `syncNow`.
+ *
+ * Since 0.2.0 (spec javis-server/docs/superpowers/specs/2026-09-24-obsidian-
+ * notes-ingest-design.md §F.4) a run is the download followed by the upload,
+ * inside the same guard, each half running even when the other fails. The
+ * upload half does nothing — no request at all — until the user selects a
+ * folder, so an install that never opts in behaves exactly like 0.1.x.
  */
 
-import { Notice, Plugin } from 'obsidian';
+import { Notice, Plugin, TFile } from 'obsidian';
 
+import { isUnderFolder, normalizeFolder } from './core/folders';
 import { JavisWikiApiClient, obsidianTransport } from './shell/api';
-import { JavisOAuth } from './shell/auth';
-import type { JavisSettings, SyncResult, SyncTrigger } from './shell/contracts';
+import { JavisOAuth, OAUTH_SCOPE_WRITE, WIKI_WRITE_SCOPE, wikiResource } from './shell/auth';
+import type {
+  ConnectOptions,
+  JavisSettings,
+  LastUploadReport,
+  SyncResult,
+  SyncTrigger,
+  UploadResult,
+} from './shell/contracts';
 import { DEFAULT_SETTINGS } from './shell/contracts';
 import { isJavisError } from './shell/errors';
+import { ReviewPendingModal } from './shell/review-modal';
 import { JavisSettingTab, clampMinutes, describe } from './shell/settings';
+import { JavisSourcesApiClient } from './shell/sources-api';
 import { summarize, syncOnce } from './shell/sync';
+import {
+  EDIT_DEBOUNCE_MS,
+  SelfWriteTracker,
+  createTrailingDebounce,
+  runDownloadThenUpload,
+  summarizeUpload,
+  uploadOnce,
+} from './shell/upload';
 import { ObsidianSecretStore, ObsidianVaultAdapter } from './shell/vault';
 
 /**
@@ -47,12 +71,32 @@ const VAULT_OPEN_DELAY_MS = 2_000;
 
 const MINUTE_MS = 60_000;
 
+/** Triggers a person just initiated: they get Notices, and may open the browser for a step-up. */
+const INTERACTIVE: ReadonlySet<SyncTrigger> = new Set<SyncTrigger>(['command', 'settings', 'review']);
+
+/** How many entries of each list `lastUpload` keeps in data.json (the tab shows 10). */
+const REPORT_LIST_CAP = 100;
+
+/** Options for one run. All optional; `syncNow(trigger)` alone is the 0.1.x run plus the upload. */
+export interface SyncOptions {
+  /** Hold keys confirmed in "Review pending changes" (D-PLAN-14). */
+  release?: string[];
+  /** "Re-upload all" (D-PLAN-15). */
+  reuploadAll?: boolean;
+  /** Skip the download: the edit trigger and the review command. */
+  uploadOnly?: boolean;
+}
+
 export default class JavisWikiSyncPlugin extends Plugin {
   settings: JavisSettings = { ...DEFAULT_SETTINGS };
   auth!: JavisOAuth;
 
   #vault!: ObsidianVaultAdapter;
   #api!: JavisWikiApiClient;
+  #sources!: JavisSourcesApiClient;
+  /** Paths the upload just stamped; their `modify` must not schedule an upload (§F.2). */
+  readonly #selfWrites = new SelfWriteTracker(() => Date.now());
+  #editDebounce: { poke(): void; cancel(): void } | null = null;
 
   /** The single-flight guard. Never written anywhere but `syncNow`. */
   #running = false;
@@ -94,6 +138,19 @@ export default class JavisWikiSyncPlugin extends Plugin {
       this.auth,
       obsidianTransport,
     );
+    // Reads `baseUrl` live, unlike the export client above (plan D-API-2).
+    this.#sources = new JavisSourcesApiClient(
+      { baseUrl: () => this.settings.baseUrl },
+      this.auth,
+      obsidianTransport,
+    );
+    this.#editDebounce = createTrailingDebounce(
+      () => {
+        void this.syncNow('edit', { uploadOnly: true });
+      },
+      EDIT_DEBOUNCE_MS,
+      () => this.#running,
+    );
 
     this.#statusBar = this.addStatusBarItem();
     this.#setStatus(this.settings.lastSyncSummary ?? 'Javis: idle');
@@ -115,9 +172,32 @@ export default class JavisWikiSyncPlugin extends Plugin {
       void this.syncNow('command');
     });
 
+    // Spec 2026-09-24 §F.3.6: the held changes, listed, sent on confirmation.
+    this.addCommand({
+      id: 'review-pending-changes',
+      name: 'Review pending changes',
+      callback: () => this.openReview(),
+    });
+
     // §F.4 trigger (a): vault open, debounced. Inside `onLayoutReady` so the
-    // initial vault-load event storm is behind us before anything runs.
+    // initial vault-load event storm is behind us before anything runs. For
+    // the upload half this run is also the reconcile that catches edits made
+    // while Obsidian was closed, which raise no events (2026-09-24 §F.4).
     this.app.workspace.onLayoutReady(() => {
+      // Registered here and not earlier: `create`/`modify` storms fire while a
+      // vault loads (2026-09-24 §L.2), and none of them is an edit.
+      this.registerEvent(
+        this.app.vault.on('modify', (file) => {
+          if (!this.settings.uploadOnEdit) return;
+          if (!(file instanceof TFile) || file.extension !== 'md') return;
+          if (!this.settings.uploadFolders.some((folder) => isUnderFolder(file.path, folder))) return;
+          // Our own stamp raised this modify. Ignoring it is what stops two
+          // devices from looping on each other's writes (obsync #179).
+          if (this.#selfWrites.consume(file.path)) return;
+          this.#editDebounce?.poke();
+        }),
+      );
+
       if (!this.settings.syncOnVaultOpen) return;
       this.#openTimeoutId = window.setTimeout(() => {
         this.#openTimeoutId = null;
@@ -134,6 +214,7 @@ export default class JavisWikiSyncPlugin extends Plugin {
     // plugin no longer belongs to. `requestUrl` has no cancellation, so one
     // request may still be in the air; the run stops before its next write.
     this.#abort?.abort();
+    this.#editDebounce?.cancel();
     this.#clearInterval();
     if (this.#openTimeoutId !== null) {
       window.clearTimeout(this.#openTimeoutId);
@@ -152,6 +233,19 @@ export default class JavisWikiSyncPlugin extends Plugin {
       String(this.settings.intervalMinutes),
       DEFAULT_SETTINGS.intervalMinutes,
     );
+    // The same for the 0.2.0 fields: a hand-edited or foreign value must not be
+    // able to reach `planUpload` as something other than its declared type.
+    const s = this.settings;
+    s.uploadFolders = Array.isArray(s.uploadFolders)
+      ? s.uploadFolders.filter((f): f is string => typeof f === 'string').map(normalizeFolder)
+      : [];
+    s.uploadMemory =
+      typeof s.uploadMemory === 'object' && s.uploadMemory !== null && !Array.isArray(s.uploadMemory)
+        ? s.uploadMemory
+        : {};
+    s.uploadOnEdit = s.uploadOnEdit === true;
+    s.pendingReuploadAll = s.pendingReuploadAll === true;
+    if (typeof s.lastUpload !== 'object' || Array.isArray(s.lastUpload)) s.lastUpload = null;
   }
 
   async saveSettings(): Promise<void> {
@@ -196,15 +290,16 @@ export default class JavisWikiSyncPlugin extends Plugin {
    * the first one ends, which is the same double-write with a delay in front of
    * it, and there is nothing a second immediate run would learn.
    */
-  async syncNow(trigger: SyncTrigger): Promise<SyncResult | null> {
+  async syncNow(trigger: SyncTrigger, opts: SyncOptions = {}): Promise<SyncResult | null> {
+    const interactive = INTERACTIVE.has(trigger);
     if (this.#running) {
-      if (trigger === 'command' || trigger === 'settings') {
+      if (interactive) {
         new Notice('Javis: a sync is already running.');
       }
       return null;
     }
     if (!this.auth.isConnected()) {
-      if (trigger === 'command' || trigger === 'settings') {
+      if (interactive) {
         new Notice('Javis: connect your account in the plugin settings first.');
       }
       return null;
@@ -212,53 +307,206 @@ export default class JavisWikiSyncPlugin extends Plugin {
 
     this.#running = true;
     this.#abort = new AbortController();
+    const signal = this.#abort.signal;
     this.#setStatus('Javis: syncing…');
 
     try {
-      const result = await syncOnce({
-        api: this.#api,
-        vault: this.#vault,
-        cachedCursor: this.settings.cachedCursor,
-        pendingFullResync: this.settings.pendingFullResync,
-        trigger,
-        signal: this.#abort.signal,
-        onProgress: (done) => this.#setStatus(`Javis: syncing… ${done}`),
+      const outcome = await runDownloadThenUpload({
+        uploadOnly: opts.uploadOnly,
+        download: () => this.#download(trigger, signal),
+        upload: () => this.#upload(trigger, opts, signal),
       });
 
-      // `nextCursor` is null when the run wrote nothing it was handed, or
-      // could not write part of it. Keeping the old cursor re-delivers those
-      // rows next time, and every write in §F.2 is idempotent.
-      if (result.nextCursor !== null) this.settings.cachedCursor = result.nextCursor;
-      // Keeping the cursor is not enough when the cursor came from the vault:
-      // `max(javis_rev)` has moved past the note that failed. The run says so,
-      // and a clean run says the opposite, so this is assigned and never OR-ed.
-      this.settings.pendingFullResync = result.pendingFullResync;
-
-      const summary = summarize(result);
-      this.settings.lastSyncAt = result.finishedAt;
-      this.settings.lastSyncSummary = summary;
-      await this.saveSettings();
-
-      this.#setStatus(`Javis: ${summary}`);
-      if (trigger === 'command' || trigger === 'settings') {
-        new Notice(`Javis: ${summary}.`);
+      let downloadLine = this.settings.lastSyncSummary ?? 'idle';
+      let downloadResult: SyncResult | null = null;
+      if (outcome.download?.ok) {
+        downloadResult = outcome.download.value;
+        downloadLine = summarize(downloadResult);
+      } else if (outcome.download && !outcome.download.ok) {
+        await this.#reportFailure(outcome.download.error, trigger);
+        if (isJavisError(outcome.download.error) && outcome.download.error.code === 'cancelled') {
+          return null;
+        }
+        downloadLine = 'sync failed';
       }
-      if (result.failures.length > 0) {
-        // Named, not counted: "3 failed" is not something a user can fix.
-        const listed = result.failures
-          .slice(0, 5)
-          .map((failure) => `• ${failure.path}: ${failure.message}`)
-          .join('\n');
-        new Notice(`Javis could not write some notes:\n${listed}`, 12_000);
+
+      let uploadLine: string | null = null;
+      if (outcome.upload?.ok && outcome.upload.value !== null) {
+        uploadLine = outcome.upload.value;
+      } else if (outcome.upload && !outcome.upload.ok) {
+        // `uploadOnce` never throws, so this is a bug in the wiring; say so
+        // rather than leaving the status bar on "syncing…".
+        uploadLine = `failed: ${describe(outcome.upload.error)}`;
       }
-      return result;
-    } catch (error) {
-      await this.#reportFailure(error, trigger);
-      return null;
+
+      this.#setStatus(
+        opts.uploadOnly
+          ? `Javis: upload: ${uploadLine ?? 'nothing to upload'}`
+          : `Javis: ${downloadLine}${uploadLine === null ? '' : ` · upload: ${uploadLine}`}`,
+      );
+      return downloadResult;
     } finally {
       this.#running = false;
       this.#abort = null;
     }
+  }
+
+  /**
+   * The Phase 1 download, as it was: the body of 0.1.x `syncNow`, moved into a
+   * method so the upload can follow it. Throws on failure; `syncNow` reports.
+   */
+  async #download(trigger: SyncTrigger, signal: AbortSignal): Promise<SyncResult> {
+    const result = await syncOnce({
+      api: this.#api,
+      vault: this.#vault,
+      cachedCursor: this.settings.cachedCursor,
+      pendingFullResync: this.settings.pendingFullResync,
+      trigger,
+      signal,
+      onProgress: (done) => this.#setStatus(`Javis: syncing… ${done}`),
+    });
+
+    // `nextCursor` is null when the run wrote nothing it was handed, or
+    // could not write part of it. Keeping the old cursor re-delivers those
+    // rows next time, and every write in §F.2 is idempotent.
+    if (result.nextCursor !== null) this.settings.cachedCursor = result.nextCursor;
+    // Keeping the cursor is not enough when the cursor came from the vault:
+    // `max(javis_rev)` has moved past the note that failed. The run says so,
+    // and a clean run says the opposite, so this is assigned and never OR-ed.
+    this.settings.pendingFullResync = result.pendingFullResync;
+
+    const summary = summarize(result);
+    this.settings.lastSyncAt = result.finishedAt;
+    this.settings.lastSyncSummary = summary;
+    await this.saveSettings();
+
+    this.#setStatus(`Javis: ${summary}`);
+    if (INTERACTIVE.has(trigger)) {
+      new Notice(`Javis: ${summary}.`);
+    }
+    if (result.failures.length > 0) {
+      // Named, not counted: "3 failed" is not something a user can fix.
+      const listed = result.failures
+        .slice(0, 5)
+        .map((failure) => `• ${failure.path}: ${failure.message}`)
+        .join('\n');
+      new Notice(`Javis could not write some notes:\n${listed}`, 12_000);
+    }
+    return result;
+  }
+
+  /**
+   * The upload half (2026-09-24 §F.2). Returns the status-bar line, or null
+   * when there is nothing to say (no folder selected). Never throws past
+   * `uploadOnce`, which never throws.
+   */
+  async #upload(trigger: SyncTrigger, opts: SyncOptions, signal: AbortSignal): Promise<string | null> {
+    if (this.settings.uploadFolders.length === 0) return null; // D-RUN-2
+    const interactive = INTERACTIVE.has(trigger);
+
+    // D-RUN-3: a background run with a token that visibly lacks `wiki:write`
+    // does not try, and does not open a browser. An undecodable token is tried,
+    // and a 403 decides.
+    const scopes = this.auth.grantedScopes();
+    if (!interactive && scopes !== null && !scopes.includes(WIKI_WRITE_SCOPE)) {
+      return 'paused; reconnect in settings to allow uploads';
+    }
+
+    const reuploadAll = opts.reuploadAll === true || this.settings.pendingReuploadAll;
+    const previousHeld = new Set((this.settings.lastUpload?.held ?? []).map((h) => h.key));
+
+    const result = await uploadOnce({
+      api: this.#sources,
+      vault: this.#vault,
+      folders: this.settings.uploadFolders,
+      memory: this.settings.uploadMemory,
+      now: Date.now(),
+      newId: () => crypto.randomUUID(),
+      reuploadAll,
+      release: opts.release ?? [],
+      signal,
+      // D-AUTH-4: only a person who just clicked may be sent to the browser.
+      stepUp: interactive ? () => this.auth.connect(this.uploadConnectOptions()) : undefined,
+      selfWrites: this.#selfWrites,
+      onProgress: (done, total) => this.#setStatus(`Javis: uploading… ${done}/${total}`),
+    });
+
+    const summary = summarizeUpload(result);
+    // D-RUN-10: memory is persisted whatever happened.
+    this.settings.uploadMemory = result.nextMemory;
+    this.settings.lastUpload = toReport(result, summary);
+    if (result.stoppedBy === null && result.invalidFolders.length === 0) this.settings.pendingReuploadAll = false;
+    else if (opts.reuploadAll) this.settings.pendingReuploadAll = true;
+    await this.saveSettings();
+
+    this.#noticeUpload(result, summary, interactive, previousHeld);
+    return summary;
+  }
+
+  #noticeUpload(result: UploadResult, summary: string, interactive: boolean, previousHeld: Set<string>): void {
+    if (result.stoppedBy?.code === 'cancelled') return;
+    if (interactive) new Notice(`Javis upload: ${summary}.`);
+
+    if (result.invalidFolders.length > 0) {
+      const listed = result.invalidFolders.map((e) => `• ${e.folder || '(vault root)'}: ${e.reason}`).join('\n');
+      new Notice(`Javis uploads are off until the folder list is fixed:\n${listed}`, 12_000);
+    }
+
+    // D-UI-1: at most one held Notice per run, and only when the set changed,
+    // so an interval run does not repeat the same warning every 30 minutes.
+    const heldKeys = new Set(result.held.map((h) => h.key));
+    const changed = heldKeys.size !== previousHeld.size || [...heldKeys].some((k) => !previousHeld.has(k));
+    if (result.held.length > 0 && (changed || interactive)) {
+      new Notice(
+        `Javis held ${result.held.length} change${result.held.length === 1 ? '' : 's'} as a precaution. ` +
+          'Run "Review pending changes" to see and send them.',
+        12_000,
+      );
+    }
+
+    if (result.failures.length > 0) {
+      const listed = result.failures
+        .slice(0, 5)
+        .map((failure) => `• ${failure.path}: ${failure.message}`)
+        .join('\n');
+      new Notice(`Javis could not upload some notes:\n${listed}`, 12_000);
+    }
+
+    // Like #reportFailure: a background run that needs the user still says so.
+    if (result.stoppedBy && (interactive || result.stoppedBy.needsUserAction)) {
+      new Notice(`Javis upload stopped: ${result.stoppedBy.message}`, 10_000);
+    }
+  }
+
+  // -- the upload's OAuth and review surface --------------------------------
+
+  /**
+   * What `connect` should ask for (§C.7, plan D-AUTH-1): the read scope alone
+   * while no upload folder is selected, the union scope and the `/wiki`
+   * resource once one is.
+   */
+  uploadConnectOptions(): ConnectOptions {
+    if (this.settings.uploadFolders.length === 0) return {};
+    return { scope: OAUTH_SCOPE_WRITE, resource: wikiResource(this.settings.baseUrl) };
+  }
+
+  /** True when a folder is selected but this device's token cannot write (D-AUTH-3). */
+  needsUploadReconnect(): boolean {
+    if (this.settings.uploadFolders.length === 0 || !this.auth.isConnected()) return false;
+    const scopes = this.auth.grantedScopes();
+    return scopes !== null && !scopes.includes(WIKI_WRITE_SCOPE);
+  }
+
+  /** The "Review pending changes" command. */
+  openReview(): void {
+    const held = this.settings.lastUpload?.held ?? [];
+    if (held.length === 0) {
+      new Notice('Javis: there are no pending changes to review.');
+      return;
+    }
+    new ReviewPendingModal(this.app, held, (keys) => {
+      void this.syncNow('review', { release: keys, uploadOnly: true });
+    }).open();
   }
 
   /**
@@ -294,4 +542,18 @@ export default class JavisWikiSyncPlugin extends Plugin {
   #setStatus(text: string): void {
     this.#statusBar?.setText(text);
   }
+}
+
+/** The persisted, capped copy of a run (D-UI-2 shows 10 of each; `held` is kept whole for the review). */
+function toReport(result: UploadResult, summary: string): LastUploadReport {
+  const { nextMemory: _memory, ...rest } = result;
+  return {
+    ...rest,
+    failures: rest.failures.slice(0, REPORT_LIST_CAP),
+    skipped: rest.skipped.slice(0, REPORT_LIST_CAP),
+    waiting: rest.waiting.slice(0, REPORT_LIST_CAP),
+    undoReports: rest.undoReports.slice(0, REPORT_LIST_CAP),
+    at: new Date().toISOString(),
+    summary,
+  };
 }
