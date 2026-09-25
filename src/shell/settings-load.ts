@@ -168,6 +168,7 @@ export function sanitizeSettings(stored: unknown): JavisSettings {
         .filter(isUuid)
         .slice(-REMOVED_IDS_CAP)
     : [];
+  s.uploadAccount = typeof s.uploadAccount === 'string' && s.uploadAccount !== '' ? s.uploadAccount : null;
   s.lastUpload = lastUpload(s.lastUpload);
   return s;
 }

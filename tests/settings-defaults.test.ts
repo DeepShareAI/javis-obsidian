@@ -100,6 +100,13 @@ describe('sanitizeSettings (review: loadSettings was untested and trusted memory
     expect(sanitizeSettings(null).uploadRemovedIds).toEqual([]);
   });
 
+  it('uploadAccount is a non-empty string or null (review)', () => {
+    expect(sanitizeSettings({ uploadAccount: 'https://mcp.javis.is user_1' }).uploadAccount).toBe('https://mcp.javis.is user_1');
+    expect(sanitizeSettings({ uploadAccount: '' }).uploadAccount).toBeNull();
+    expect(sanitizeSettings({ uploadAccount: 7 }).uploadAccount).toBeNull();
+    expect(sanitizeSettings(null).uploadAccount).toBeNull();
+  });
+
   it('booleans are booleans', () => {
     const s = sanitizeSettings({ uploadOnEdit: 'yes', pendingReuploadAll: 1 });
     expect(s.uploadOnEdit).toBe(false);

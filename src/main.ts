@@ -420,6 +420,9 @@ export default class JavisWikiSyncPlugin extends Plugin {
       reuploadAll,
       reuploadIds: this.settings.pendingReuploadIds,
       removedIds: this.settings.uploadRemovedIds,
+      // Rule 8 of upload.ts: memory belongs to one account (review).
+      account: () => this.auth.accountKey(),
+      expectedAccount: this.settings.uploadAccount,
       release: opts.release ?? [],
       signal,
       // D-AUTH-4: only a person who just clicked may be sent to the browser.
@@ -443,6 +446,13 @@ export default class JavisWikiSyncPlugin extends Plugin {
     else if (opts.reuploadAll) this.settings.pendingReuploadAll = true;
     this.settings.pendingReuploadIds = nextPendingReupload(this.settings.pendingReuploadIds, result);
     this.settings.uploadRemovedIds = nextRemovedIds(this.settings.uploadRemovedIds, result.removedIds);
+    // The first run binds the vault to its account; a vault with nothing
+    // selected and nothing left to clean up is bound to nobody, so opting in
+    // later on another account needs no reset.
+    if (this.settings.uploadAccount === null && result.account !== null) this.settings.uploadAccount = result.account;
+    if (this.settings.uploadFolders.length === 0 && Object.keys(this.settings.uploadMemory).length === 0) {
+      this.settings.uploadAccount = null;
+    }
     await this.saveSettings();
 
     this.#noticeUpload(result, summary, interactive, previousHeld);
@@ -552,6 +562,37 @@ export default class JavisWikiSyncPlugin extends Plugin {
   needsAudienceReconnect(): boolean {
     if (!this.auth.isConnected()) return false;
     return isLegacyAudience(this.auth.grantedAudiences(), this.settings.baseUrl);
+  }
+
+  /**
+   * True when this device is signed in to an account other than the one this
+   * vault's uploads belong to (rule 8 of upload.ts, review). Uploads stay
+   * paused until the user signs back in, or starts uploads over.
+   */
+  uploadAccountMismatch(): boolean {
+    if (this.settings.uploadAccount === null || !this.auth.isConnected()) return false;
+    return this.auth.accountKey() !== this.settings.uploadAccount;
+  }
+
+  /**
+   * "Start uploads over": the explicit reset rule 8 waits for. Forgets every
+   * trace of the previous account's uploads — memory, this device's
+   * debounce clocks, owed re-sends, removed ids, the last report — and the
+   * folder selection, so nothing is sent to the new account until the user
+   * picks folders again. The previous account's rows stay where they are:
+   * nothing here can reach them any more, which is why the settings text
+   * says so before the button.
+   */
+  async resetUploads(): Promise<void> {
+    this.settings.uploadFolders = [];
+    this.settings.uploadMemory = {};
+    this.settings.pendingReuploadAll = false;
+    this.settings.pendingReuploadIds = [];
+    this.settings.uploadRemovedIds = [];
+    this.settings.lastUpload = null;
+    this.settings.uploadAccount = null;
+    this.#saveMissing({});
+    await this.saveSettings();
   }
 
   /** The "Review pending changes" command. */

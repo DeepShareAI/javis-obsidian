@@ -362,6 +362,31 @@ export class JavisSettingTab extends PluginSettingTab {
         );
     }
 
+    // Rule 8 of upload.ts (review): signed in to another account than the one
+    // these uploads belong to. Say so, and offer the one explicit way out.
+    if (this.plugin.uploadAccountMismatch()) {
+      new Setting(containerEl)
+        .setName('Uploads are paused: different account')
+        .setDesc(
+          'This device is signed in to a different Javis account (or server) than the one this vault ' +
+            'uploaded to, so nothing is uploaded or removed. Sign back in to that account to carry on. ' +
+            'Or start over: the plugin forgets its uploads and your folder choice, and notes are uploaded ' +
+            'to this account once you choose folders again. What the other account holds stays there; ' +
+            'remove it from that account.',
+        )
+        .addButton((button) =>
+          button
+            .setButtonText('Start uploads over')
+            .setWarning()
+            .onClick(async () => {
+              button.setDisabled(true);
+              await this.plugin.resetUploads();
+              new Notice('Javis: uploads start over. Choose folders to upload to this account.');
+              this.display();
+            }),
+        );
+    }
+
     // 2. D-AUTH-3: a read-only connection prompts one reconnect.
     if (this.plugin.needsUploadReconnect()) {
       new Setting(containerEl)

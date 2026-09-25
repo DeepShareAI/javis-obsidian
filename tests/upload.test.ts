@@ -620,6 +620,80 @@ describe('uploadOnce: step-up before anything is written (review of §C.7)', () 
   });
 });
 
+describe('uploadOnce: only in the account this vault uploaded to (rule 8, review)', () => {
+  const A = 'https://mcp.javis.is user_a';
+  const B = 'https://mcp.javis.is user_b';
+
+  it('a run in the bound account goes ahead and reports it', async () => {
+    const { api, deps } = setup({ 'Journal/a.md': stamped(1) });
+    const result = await uploadOnce(deps({ account: () => A, expectedAccount: A }));
+    expect(result.stoppedBy).toBeNull();
+    expect(result.account).toBe(A);
+    expect(api.calls).toEqual(['list', `put ${id(1)}`]);
+  });
+
+  it('the first run binds: no expected account, the current one is reported', async () => {
+    const { deps } = setup({ 'Journal/a.md': stamped(1) });
+    const result = await uploadOnce(deps({ account: () => B, expectedAccount: null }));
+    expect(result.account).toBe(B);
+  });
+
+  it('another account stops the run before any request, stamp or delete', async () => {
+    const { vault, api, deps } = setup({ 'Journal/new.md': 'hello\n', 'Journal/a.md': stamped(1) });
+    const memory = { [id(9)]: { path: 'Journal/gone.md', hash: null, bytes: 1, missingSince: T0 - DEBOUNCE_MS } };
+    const result = await uploadOnce(deps({ memory, account: () => B, expectedAccount: A }));
+    expect(result.stoppedBy).toMatchObject({ code: 'account-changed', needsUserAction: true });
+    expect(api.calls).toEqual([]);
+    expect(vault.log).toEqual([]);
+    expect(result.nextMemory).toEqual(memory);
+    expect(result.account).toBeNull();
+  });
+
+  it('an account that cannot be read is not the bound one', async () => {
+    const { api, deps } = setup({ 'Journal/a.md': stamped(1) });
+    const result = await uploadOnce(deps({ account: () => null, expectedAccount: A }));
+    expect(result.stoppedBy?.code).toBe('account-changed');
+    expect(api.calls).toEqual([]);
+  });
+
+  it('the pre-flight step-up signing in as someone else stops the run', async () => {
+    let who = A;
+    let canWrite = false;
+    const stepUp = vi.fn(async () => {
+      who = B;
+      canWrite = true;
+    });
+    const { api, deps } = setup({ 'Journal/a.md': stamped(1) });
+    const result = await uploadOnce(
+      deps({ stepUp, lacksWriteGrant: () => !canWrite, account: () => who, expectedAccount: A }),
+    );
+    expect(stepUp).toHaveBeenCalledTimes(1);
+    expect(result.stoppedBy?.code).toBe('account-changed');
+    expect(api.calls).toEqual([]);
+  });
+
+  it('a mid-run step-up that returns as someone else drops the plan', async () => {
+    let who = A;
+    const stepUp = vi.fn(async () => {
+      who = B;
+    });
+    const { api, deps } = setup({ 'Journal/a.md': stamped(1), 'Journal/b.md': stamped(2) });
+    api.listing = { sources: [row(id(9), 'Journal/gone.md', 'x')], counts: {} };
+    api.anyPut.push(new InsufficientScopeError());
+    const memory = { [id(9)]: { path: 'Journal/gone.md', hash: null, bytes: 1, missingSince: T0 - DEBOUNCE_MS } };
+    const result = await uploadOnce(deps({ memory, stepUp, account: () => who, expectedAccount: A }));
+    expect(result.stoppedBy?.code).toBe('account-changed');
+    // The 403'd PUT is not retried in the new account, and nothing after it runs.
+    expect(api.calls).toEqual(['list', `put ${id(1)}`]);
+  });
+
+  it('without an account reader (tests, old wiring) nothing is checked', async () => {
+    const { deps } = setup({ 'Journal/a.md': stamped(1) });
+    const result = await uploadOnce(deps({ expectedAccount: A }));
+    expect(result.stoppedBy).toBeNull();
+  });
+});
+
 describe('uploadOnce: deletes and holds', () => {
   it('deletes a row missing past the debounce and forgets it', async () => {
     const { api, deps } = setup({ 'Journal/a.md': stamped(1) });
@@ -840,6 +914,7 @@ describe('summarizeUpload', () => {
     stoppedBy: null,
     ran: true,
     planned: true,
+    account: null,
   };
 
   it('lists the non-zero parts', () => {

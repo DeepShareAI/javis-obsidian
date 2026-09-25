@@ -34,6 +34,15 @@
  *    last folder removes its notes like deselecting any other (D-PLAN-13).
  * 7. **No write grant → step up (or stop) before the first request**, so no
  *    note is stamped by a run that cannot upload it (review of §C.7).
+ * 8. **Only in the account this vault uploaded to** (review). Upload memory,
+ *    the stamped ids and the holds describe rows in one account; nothing
+ *    tied them to it, so a reconnect or a step-up in a browser signed in to
+ *    someone else PUT every selected note's full text into that account and
+ *    stranded the originals where no plugin path could remove them. With a
+ *    bound account (`expectedAccount`), a run in any other account — or one
+ *    whose account cannot be read — stops before its first request, and a
+ *    mid-run step-up that returns as anyone else stops the run before the
+ *    plan built from the old listing is carried out.
  */
 
 import { validateFolders } from '../core/folders';
@@ -60,7 +69,13 @@ import type {
   UploadVault,
 } from './contracts';
 import { REMOVED_IDS_CAP } from './contracts';
-import { InsufficientScopeError, RateLimitedError, SyncCancelledError, isJavisError } from './errors';
+import {
+  AccountChangedError,
+  InsufficientScopeError,
+  RateLimitedError,
+  SyncCancelledError,
+  isJavisError,
+} from './errors';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -247,6 +262,7 @@ export async function uploadOnce(deps: UploadDeps): Promise<UploadResult> {
     stoppedBy: null,
     ran: false,
     planned: false,
+    account: null,
   };
 
   // Rule 6. "Never opted in" is no folder AND no remembered upload: with
@@ -271,8 +287,10 @@ export async function uploadOnce(deps: UploadDeps): Promise<UploadResult> {
   }
 
   // The run's one step-up (D-AUTH-4), shared by the pre-flight below and by
-  // every request's 403 handling in `retrying`.
-  const budget = { steppedUp: false };
+  // every request's 403 handling in `retrying`. `account` is the identity
+  // the run checked before its first request; a mid-run step-up that comes
+  // back as anyone else stops the run (rule 8).
+  const budget = { steppedUp: false, account: null as string | null };
   const call = retrying(deps, budget);
   const signal = deps.signal;
 
@@ -300,6 +318,18 @@ export async function uploadOnce(deps: UploadDeps): Promise<UploadResult> {
       result.stoppedBy = stopReason(new InsufficientScopeError());
       return result;
     }
+  }
+
+  // Rule 8. After the pre-flight, because a step-up is exactly where the
+  // browser's Clerk session can turn out to be somebody else's.
+  if (deps.account) {
+    const current = deps.account();
+    if (deps.expectedAccount != null && current !== deps.expectedAccount) {
+      result.stoppedBy = stopReason(new AccountChangedError());
+      return result;
+    }
+    budget.account = current;
+    result.account = current;
   }
 
   let listing: SourcesListing | null = null;
@@ -420,7 +450,10 @@ async function readNotes(
  * step-up (D-AUTH-4). The step-up budget is shared by every call in the run:
  * after one re-authorization, a second `insufficient_scope` stops the run.
  */
-function retrying(deps: UploadDeps, budget: { steppedUp: boolean }): <T>(fn: () => Promise<T>) => Promise<T> {
+function retrying(
+  deps: UploadDeps,
+  budget: { steppedUp: boolean; account: string | null },
+): <T>(fn: () => Promise<T>) => Promise<T> {
   const sleep = deps.sleep ?? defaultSleep;
   return async function call<T>(fn: () => Promise<T>): Promise<T> {
     let rateLimited = 0;
@@ -441,6 +474,9 @@ function retrying(deps: UploadDeps, budget: { steppedUp: boolean }): <T>(fn: () 
           } catch (stepUpError) {
             throw new InsufficientScopeError(undefined, { cause: stepUpError });
           }
+          // Rule 8: the plan was built from the previous account's listing.
+          // Retrying under another account would carry it out there.
+          if (deps.account && deps.account() !== budget.account) throw new AccountChangedError();
           continue;
         }
         throw error;

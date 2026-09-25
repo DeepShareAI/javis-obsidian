@@ -75,6 +75,9 @@ connection ever dies for good, the plugin says so once and stops — it does not
 retry in a loop or quietly sync stale data.
 
 **Javis server** is editable in the same settings tab if you run your own.
+Your sign-in only ever goes to the server that issued it: if the server URL in
+the plugin's settings file changes any other way (a synced settings file, a
+shared vault), syncing stops and asks you to change it back or reconnect.
 
 ## What it creates
 
@@ -217,6 +220,12 @@ holds), so two vaults can upload to the same Javis account without removing
 each other's notes. The plugin remembers what it uploaded in its settings file;
 if that file is lost, a note that was deleted *before* the plugin saw its note
 again stays on the server.
+
+A vault's uploads belong to the Javis account they were first made to. If this
+device is later signed in to a different account, uploads pause instead of
+copying your notes into it; sign back in, or use **Start uploads over** in the
+settings, which forgets the old uploads and your folder choice (what the old
+account holds stays there).
 
 **The one line the plugin writes into your note.** To recognize a note after a
 rename or a move, the plugin adds a single property line to it the first time

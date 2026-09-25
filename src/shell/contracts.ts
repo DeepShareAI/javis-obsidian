@@ -637,6 +637,21 @@ export interface UploadDeps {
    * decide (D-RUN-3).
    */
   lacksWriteGrant?: () => boolean;
+  /**
+   * This device's current account, as `JavisOAuth.accountKey()` spells it
+   * (`<origin> <sub>`), or null when the token does not say (review). Read
+   * after the pre-flight step-up and again after any mid-run step-up.
+   */
+  account?: () => string | null;
+  /**
+   * `settings.uploadAccount`: the account this vault's upload memory
+   * describes, or null before the first upload. When set, a run on any other
+   * account (or on one it cannot identify) stops before its first request
+   * with `AccountChangedError`: memory, stamps and holds all name rows in
+   * that account, and carrying on would PUT every note into the new one and
+   * strand the originals (review).
+   */
+  expectedAccount?: string | null;
   /** Cancellable sleep for 429 backoff. Injected so tests do not wait. */
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
   selfWrites?: SelfWriteMarker;
@@ -697,6 +712,12 @@ export interface UploadResult {
   stoppedBy: { code: string; message: string; needsUserAction: boolean } | null;
   /** False when the half did nothing because no folder is selected. */
   ran: boolean;
+  /**
+   * The account this run checked and worked in, or null (not reached, or
+   * not identifiable). The caller stores it as `uploadAccount` when none was
+   * stored yet: the first upload binds the vault to its account.
+   */
+  account: string | null;
   /**
    * True once `planUpload` ran. False when the run stopped before it (no
    * write grant, a failed listing, a failed enumeration, an invalid
@@ -807,6 +828,14 @@ export interface JavisSettings {
    * account-wide listing are this vault's (review).
    */
   uploadRemovedIds: string[];
+  /**
+   * The account (`JavisOAuth.accountKey()`: server origin and token `sub`)
+   * that `uploadMemory` and the stamped ids belong to; null until the first
+   * upload run, and again once every upload has been cleaned up (review).
+   * Not a credential. Synced with the vault on purpose: a second device
+   * signed in to another account must not upload this vault's notes there.
+   */
+  uploadAccount: string | null;
 }
 
 /** How many removed ids `uploadRemovedIds` keeps (review). */
@@ -829,6 +858,7 @@ export const DEFAULT_SETTINGS: JavisSettings = {
   pendingReuploadAll: false,
   pendingReuploadIds: [],
   uploadRemovedIds: [],
+  uploadAccount: null,
 };
 
 /**
