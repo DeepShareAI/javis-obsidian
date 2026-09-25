@@ -564,9 +564,14 @@ export interface SourcesApi {
   delete(sourceId: string, signal?: AbortSignal): Promise<DeleteOutcome>;
 }
 
-/** Records the paths the upload itself just wrote, so their `modify` is ignored (§F.2). */
+/**
+ * Records the paths the upload itself just wrote, so their `modify` is ignored
+ * (§F.2). The tracker reads its own injected clock at `mark` time: a run can
+ * take minutes, so the run's start time would be the wrong "now" for a
+ * seconds-long suppression window.
+ */
 export interface SelfWriteMarker {
-  mark(path: string, now: number): void;
+  mark(path: string): void;
 }
 
 export interface UploadDeps {
