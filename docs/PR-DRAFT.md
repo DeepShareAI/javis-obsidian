@@ -123,6 +123,20 @@ calls rather than spec text:
 - **Server-side distill failures are named** (review fix): this vault's rows the
   poller left `failed` are listed in settings with their `last_error` (§D.5
   "shows its error"), not just counted.
+- **Tokens are bound to the origin that issued them** (third review): the
+  keychain stores the origin beside the tokens, and a `baseUrl` that differs
+  (a synced or shared `data.json`) gets neither token; disconnect revokes at
+  the issuing origin. A token from before this is bound by its `aud`.
+- **Uploads are bound to one account** (third review): `uploadAccount`
+  (origin + token `sub`) is set by the first upload; a run in another
+  account, or a step-up that comes back as one, stops before sending
+  anything. Settings offers "Start uploads over" as the explicit reset.
+- **Third review, smaller fixes:** the debounce clock is read when the vault
+  is enumerated (after any step-up), not at run start; an unreadable keeper
+  plans nothing for its id instead of restamping the readable carrier; undo
+  reports are limited to this vault's rows (`uploadRemovedIds` remembers
+  what it removed); the server-failure list no longer promises that
+  "Re-upload all" retries (an equal-hash PUT is `200 unchanged`).
 - **`data.json` is sanitized by a tested pure function** (`settings-load.ts`);
   a malformed memory entry is repaired toward "unknown" (e.g. a non-number
   `missingSince` → null), which can only delay a delete.
@@ -169,7 +183,7 @@ calls rather than spec text:
 Measured on this branch, 2026-09-24:
 
 ```
-vitest run       17 files, 568 tests passed (baseline 290; 503 before the first review fixes, 542 before the second)
+vitest run       17 files, 600 tests passed (baseline 290; 503 before the first review fixes, 542 before the second, 568 before the third)
 tsc -noEmit      exit 0
 esbuild prod     exit 0
 ```
