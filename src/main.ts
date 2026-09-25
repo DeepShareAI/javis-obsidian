@@ -60,6 +60,7 @@ import {
   SelfWriteTracker,
   createTrailingDebounce,
   nextPendingReupload,
+  nextRemovedIds,
   runDownloadThenUpload,
   summarizeUpload,
   uploadOnce,
@@ -418,6 +419,7 @@ export default class JavisWikiSyncPlugin extends Plugin {
       newId: () => crypto.randomUUID(),
       reuploadAll,
       reuploadIds: this.settings.pendingReuploadIds,
+      removedIds: this.settings.uploadRemovedIds,
       release: opts.release ?? [],
       signal,
       // D-AUTH-4: only a person who just clicked may be sent to the browser.
@@ -440,6 +442,7 @@ export default class JavisWikiSyncPlugin extends Plugin {
     if (result.stoppedBy === null && result.invalidFolders.length === 0) this.settings.pendingReuploadAll = false;
     else if (opts.reuploadAll) this.settings.pendingReuploadAll = true;
     this.settings.pendingReuploadIds = nextPendingReupload(this.settings.pendingReuploadIds, result);
+    this.settings.uploadRemovedIds = nextRemovedIds(this.settings.uploadRemovedIds, result.removedIds);
     await this.saveSettings();
 
     this.#noticeUpload(result, summary, interactive, previousHeld);

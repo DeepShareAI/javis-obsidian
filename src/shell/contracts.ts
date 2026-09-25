@@ -605,6 +605,13 @@ export interface UploadDeps {
   reuploadAll: boolean;
   /** Ids owed a re-send after an earlier "Re-upload all" PUT failed (review). */
   reuploadIds?: readonly string[];
+  /**
+   * `settings.uploadRemovedIds`: ids this vault DELETEd on earlier runs. The
+   * server fills a row's undo report after the DELETE, on a later tick, by
+   * which time the id has left upload memory; this is how a later run still
+   * knows the report is this vault's to show (see `UploadResult.undoReports`).
+   */
+  removedIds?: readonly string[];
   release: readonly string[];
   signal?: AbortSignal;
   /**
@@ -644,7 +651,16 @@ export interface UploadResult {
   held: HeldAction[];
   waiting: WaitingDelete[];
   invalidFolders: FolderError[];
-  /** Rows carrying an undo report, from this run's listing (§D.4). */
+  /**
+   * Rows carrying an undo report, from this run's listing (§D.4) — only rows
+   * this vault owns or removed (review). The listing is per ACCOUNT (rule 9
+   * of core/upload.ts), and this list is persisted into `data.json`, which
+   * lives inside the vault and may be shared (obsidian-git, a shared Sync
+   * vault). Unfiltered, a team vault's `data.json` carried the paths of the
+   * user's personal vault's deleted notes to every coworker. Owned means in
+   * upload memory before or after this run, removed by this run, or in
+   * `UploadDeps.removedIds`.
+   */
   undoReports: { path: string; report: UndoReport }[];
   /**
    * This vault's rows the server's poller left `failed` (§D.5 "After three
@@ -657,6 +673,8 @@ export interface UploadResult {
   serverFailures: { path: string; message: string }[];
   /** Ids whose PUT this run succeeded (202 or 200). */
   sentIds: string[];
+  /** Ids whose DELETE this run succeeded (202 or 204); the caller adds them to `uploadRemovedIds`. */
+  removedIds: string[];
   /**
    * Ids of re-sends ("Re-upload all", or owed from one) whose PUT failed in a
    * way worth retrying — a 5xx, one note's vault error — rather than a 400
@@ -774,7 +792,17 @@ export interface JavisSettings {
    * by a run that merely did not STOP, so those notes were never re-sent.
    */
   pendingReuploadIds: string[];
+  /**
+   * The ids this vault removed from Javis, most recent last, capped at
+   * `REMOVED_IDS_CAP`. Ids only — the paths are already in upload memory
+   * until the delete. Read to decide which undo reports in an
+   * account-wide listing are this vault's (review).
+   */
+  uploadRemovedIds: string[];
 }
+
+/** How many removed ids `uploadRemovedIds` keeps (review). */
+export const REMOVED_IDS_CAP = 200;
 
 export const DEFAULT_SETTINGS: JavisSettings = {
   baseUrl: DEFAULT_BASE_URL,
@@ -792,6 +820,7 @@ export const DEFAULT_SETTINGS: JavisSettings = {
   lastUpload: null,
   pendingReuploadAll: false,
   pendingReuploadIds: [],
+  uploadRemovedIds: [],
 };
 
 /**

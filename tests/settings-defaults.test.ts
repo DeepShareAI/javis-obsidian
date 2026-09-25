@@ -92,6 +92,14 @@ describe('sanitizeSettings (review: loadSettings was untested and trusted memory
     expect(sanitizeSettings({ lastUpload: [] }).lastUpload).toBeNull();
   });
 
+  it('uploadRemovedIds keeps lowercased uuids only, the last 200 (review)', () => {
+    const many = Array.from({ length: 205 }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`);
+    expect(sanitizeSettings({ uploadRemovedIds: [ID.toUpperCase(), 'nope', 7] }).uploadRemovedIds).toEqual([ID]);
+    expect(sanitizeSettings({ uploadRemovedIds: 'x' }).uploadRemovedIds).toEqual([]);
+    expect(sanitizeSettings({ uploadRemovedIds: many }).uploadRemovedIds).toEqual(many.slice(-200));
+    expect(sanitizeSettings(null).uploadRemovedIds).toEqual([]);
+  });
+
   it('booleans are booleans', () => {
     const s = sanitizeSettings({ uploadOnEdit: 'yes', pendingReuploadAll: 1 });
     expect(s.uploadOnEdit).toBe(false);

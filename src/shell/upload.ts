@@ -59,6 +59,7 @@ import type {
   UploadResult,
   UploadVault,
 } from './contracts';
+import { REMOVED_IDS_CAP } from './contracts';
 import { InsufficientScopeError, RateLimitedError, SyncCancelledError, isJavisError } from './errors';
 
 // ---------------------------------------------------------------------------
@@ -235,6 +236,7 @@ export async function uploadOnce(deps: UploadDeps): Promise<UploadResult> {
     undoReports: [],
     serverFailures: [],
     sentIds: [],
+    removedIds: [],
     retryIds: [],
     counts: {},
     nextMemory: cloneMemory(deps.memory),
@@ -296,15 +298,13 @@ export async function uploadOnce(deps: UploadDeps): Promise<UploadResult> {
     }
   }
 
+  let listing: SourcesListing | null = null;
   try {
     // 1. The server's list. Nothing can be decided without it: a note the
     //    server does not know looks new, and a row we cannot see cannot be
     //    guarded (rule 2 of sources-api.ts).
-    const listing: SourcesListing = await call(() => deps.api.list(signal));
+    listing = await call(() => deps.api.list(signal));
     result.counts = listing.counts;
-    result.undoReports = listing.sources
-      .filter((row) => row.undo_report !== null)
-      .map((row) => ({ path: row.vault_path, report: row.undo_report! }));
 
     // 2. Enumerate and read.
     const texts = new Map<string, string>();
@@ -324,6 +324,7 @@ export async function uploadOnce(deps: UploadDeps): Promise<UploadResult> {
     result.serverFailures = listing.sources
       .filter((row) => row.status === 'failed' && !row.deleted && plan.nextMemory[row.source_id.toLowerCase()])
       .map((row) => ({ path: row.vault_path, message: row.last_error ?? SERVER_FAILURE_FALLBACK }));
+    // Undo reports are filled in below, once this run's deletes are known.
     result.held = plan.held;
     result.waiting = plan.waiting;
     result.skipped = [...plan.skipped];
@@ -346,7 +347,28 @@ export async function uploadOnce(deps: UploadDeps): Promise<UploadResult> {
   } catch (error) {
     result.stoppedBy = stopReason(error);
   }
+  if (listing !== null && result.planned) result.undoReports = ownUndoReports(listing, deps, result);
   return result;
+}
+
+/**
+ * The listing's undo reports that are THIS vault's (review; see
+ * `UploadResult.undoReports`): the row was in upload memory before or after
+ * the run, this run removed it, or an earlier run did (`deps.removedIds`).
+ * Only computed after planning, because before it nothing says which rows are
+ * this vault's; an unplanned run keeps the previous run's list
+ * (`uploadReport`).
+ */
+function ownUndoReports(listing: SourcesListing, deps: UploadDeps, result: UploadResult): UploadResult['undoReports'] {
+  const own = new Set<string>([
+    ...Object.keys(deps.memory),
+    ...Object.keys(result.nextMemory),
+    ...result.removedIds,
+    ...(deps.removedIds ?? []).map((i) => i.toLowerCase()),
+  ]);
+  return listing.sources
+    .filter((row) => row.undo_report !== null && own.has(row.source_id.toLowerCase()))
+    .map((row) => ({ path: row.vault_path, report: row.undo_report! }));
 }
 
 function cloneMemory(memory: UploadMemory): UploadMemory {
@@ -438,6 +460,7 @@ async function execute(
       return;
     }
     result.removed += 1;
+    result.removedIds.push(action.sourceId);
     delete result.nextMemory[action.sourceId];
     return;
   }
@@ -575,6 +598,17 @@ export function summarizeUpload(result: UploadResult): string {
   let line = parts.length > 0 ? parts.join(', ') : 'nothing to upload';
   if (result.stoppedBy && result.stoppedBy.code !== 'cancelled') line += `; stopped: ${result.stoppedBy.message}`;
   return line;
+}
+
+/**
+ * `settings.uploadRemovedIds` after this run: the previous ids plus the ones
+ * this run removed, de-duplicated, most recent last, keeping the last
+ * `REMOVED_IDS_CAP`. A report older than that many deletes drops out of
+ * "Recently removed", which is what "recently" means.
+ */
+export function nextRemovedIds(previous: readonly string[], removed: readonly string[]): string[] {
+  const fresh = new Set(removed);
+  return [...previous.filter((id) => !fresh.has(id)), ...fresh].slice(-REMOVED_IDS_CAP);
 }
 
 /** How many entries of each list the persisted report keeps (the tab shows 10). */

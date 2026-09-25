@@ -24,7 +24,7 @@ import { normalizeFolder } from '../core/folders';
 import { isUuid } from '../core/note-text';
 import type { MemoryEntry, UploadMemory } from '../core/upload';
 import type { JavisSettings, LastUploadReport } from './contracts';
-import { DEFAULT_SETTINGS } from './contracts';
+import { DEFAULT_SETTINGS, REMOVED_IDS_CAP } from './contracts';
 
 /** Bounds on the interval field. Below a minute the plugin is a busy-loop. */
 export const MIN_INTERVAL_MINUTES = 5;
@@ -142,7 +142,8 @@ function lastUpload(value: unknown): LastUploadReport | null {
   }
   // Added after the first 0.2.0 builds: an older report has none.
   const serverFailures = Array.isArray(value['serverFailures']) ? value['serverFailures'] : [];
-  return { ...value, serverFailures } as unknown as LastUploadReport;
+  const removedIds = Array.isArray(value['removedIds']) ? value['removedIds'] : [];
+  return { ...value, serverFailures, removedIds } as unknown as LastUploadReport;
 }
 
 /** `loadData()`'s result → settings every other module can trust. */
@@ -159,6 +160,13 @@ export function sanitizeSettings(stored: unknown): JavisSettings {
   s.pendingReuploadAll = s.pendingReuploadAll === true;
   s.pendingReuploadIds = Array.isArray(s.pendingReuploadIds)
     ? s.pendingReuploadIds.filter((i): i is string => typeof i === 'string').map((i) => i.toLowerCase()).filter(isUuid)
+    : [];
+  s.uploadRemovedIds = Array.isArray(s.uploadRemovedIds)
+    ? s.uploadRemovedIds
+        .filter((i): i is string => typeof i === 'string')
+        .map((i) => i.toLowerCase())
+        .filter(isUuid)
+        .slice(-REMOVED_IDS_CAP)
     : [];
   s.lastUpload = lastUpload(s.lastUpload);
   return s;

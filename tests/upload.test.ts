@@ -30,6 +30,7 @@ import {
   describeNote,
   lenientSourceId,
   nextPendingReupload,
+  nextRemovedIds,
   summarizeUpload,
   uploadOnce,
   uploadReport,
@@ -644,16 +645,50 @@ describe('uploadOnce: deletes and holds', () => {
     expect(released.held).toHaveLength(5);
   });
 
-  it('reports undo reports and counts from the listing', async () => {
+  it('reports this vault\'s undo reports and the counts from the listing', async () => {
     const report = { pages_tombstoned: 1, pages_rebuilt: 3, pages_marked_stale: 2, pages_skipped_adopted: 0 };
     const { api, deps } = setup({});
     api.listing = {
       sources: [row(id(5), 'Journal/old.md', 'x', { deleted: true, status: 'deleted', undo_report: report })],
       counts: { deleted: 1 },
     };
-    const result = await uploadOnce(deps());
+    // An earlier run of this vault removed id 5; the report arrives now.
+    const result = await uploadOnce(deps({ removedIds: [id(5)] }));
     expect(result.undoReports).toEqual([{ path: 'Journal/old.md', report }]);
     expect(result.counts).toEqual({ deleted: 1 });
+  });
+
+  it('never reports another vault\'s undo reports: the listing is per account (review)', async () => {
+    const report = { pages_tombstoned: 1, pages_rebuilt: 0, pages_marked_stale: 0, pages_skipped_adopted: 0 };
+    const { api, deps } = setup({ 'Journal/a.md': stamped(1) });
+    api.listing = {
+      sources: [
+        row(id(1), 'Journal/a.md', stamped(1)),
+        // A row this vault still remembers, whose undo already ran.
+        row(id(2), 'Journal/b.md', 'x', { deleted: true, status: 'deleted', undo_report: report }),
+        // Removed by this vault on an earlier run.
+        row(id(3), 'Journal/c.md', 'x', { deleted: true, status: 'deleted', undo_report: report }),
+        // The user's other vault.
+        row(id(4), 'Personal/Health/therapy.md', 'x', { deleted: true, status: 'deleted', undo_report: report }),
+      ],
+      counts: {},
+    };
+    const memory = { [id(2)]: { path: 'Journal/b.md', hash: null, bytes: 1, missingSince: null } };
+    const result = await uploadOnce(deps({ memory, removedIds: [id(3)] }));
+    expect(result.undoReports.map((u) => u.path)).toEqual(['Journal/b.md', 'Journal/c.md']);
+  });
+
+  it('a run that removes a row lists its id for the next run to recognise the undo report', async () => {
+    const { api, deps } = setup({ 'Journal/a.md': stamped(1) });
+    api.listing = { sources: [row(id(1), 'Journal/a.md', stamped(1)), row(id(9), 'Journal/gone.md', 'x')], counts: {} };
+    const memory = { [id(9)]: { path: 'Journal/gone.md', hash: null, bytes: 1, missingSince: T0 - DEBOUNCE_MS } };
+    const result = await uploadOnce(deps({ memory }));
+    expect(result.removedIds).toEqual([id(9)]);
+    expect(nextRemovedIds([id(3), id(9)], result.removedIds)).toEqual([id(3), id(9)]);
+    expect(nextRemovedIds([id(9), id(3)], result.removedIds)).toEqual([id(3), id(9)]);
+    const many = Array.from({ length: 250 }, (_, i) => id(1000 + i));
+    expect(nextRemovedIds(many, [id(9)])).toHaveLength(200);
+    expect(nextRemovedIds(many, [id(9)]).at(-1)).toBe(id(9));
   });
 
   it('names this vault\'s rows the server gave up distilling, with their error (§D.5, review)', async () => {
@@ -788,6 +823,7 @@ describe('summarizeUpload', () => {
     undoReports: [],
     serverFailures: [],
     sentIds: [],
+    removedIds: [],
     retryIds: [],
     counts: {},
     nextMemory: {},
