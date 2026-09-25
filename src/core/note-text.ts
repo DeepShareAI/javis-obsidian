@@ -244,6 +244,25 @@ export function hasLoneSurrogate(text: string): boolean {
   return false;
 }
 
+/**
+ * True when the server would refuse `text` as a string field: a lone surrogate
+ * (D-HASH-5) or a NUL. The server's `_storable` / `_check_text_and_hash`
+ * answer 400 "text contains invalid characters" (or "title contains ...") for
+ * either, because a PostgreSQL `text` column can hold neither. Before the
+ * contract review only the surrogate was screened here, so a note with a NUL
+ * (a pasted binary fragment, a corrupted sync) was planned as a PUT, failed
+ * with a 400, and was planned again on every run: one request from the
+ * 120/min bucket each time and a failure that never became a visible skip.
+ *
+ * The whole file text is checked, not only what `uploadText` sends: the title
+ * is read from the same text, and a NUL on a stripped `javis_*` line is a
+ * corrupted file too. The text is never rewritten to drop the NUL, because the
+ * server hashes exactly what it receives and the hash must stay ours.
+ */
+export function hasInvalidChars(text: string): boolean {
+  return text.includes('\u0000') || hasLoneSurrogate(text);
+}
+
 // ---------------------------------------------------------------------------
 // Properties read out of the text
 // ---------------------------------------------------------------------------
@@ -352,7 +371,9 @@ export function noteTitle(text: string, path: string): string {
   if (/^[|>]/.test(title)) title = '';
   if (title === '') {
     const base = path.slice(path.lastIndexOf('/') + 1);
-    title = base.toLowerCase().endsWith('.md') ? base.slice(0, -3) : base;
+    // Case-sensitive like the server's `_clean_title`: only a `.md` note is
+    // ever enumerated (see `notesUnder`), so no other spelling reaches here.
+    title = base.endsWith('.md') ? base.slice(0, -3) : base;
   }
   const points = Array.from(title);
   return points.length > MAX_TITLE_CHARS ? points.slice(0, MAX_TITLE_CHARS).join('') : title;

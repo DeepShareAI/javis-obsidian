@@ -48,7 +48,7 @@
 import { validateFolders } from '../core/folders';
 import {
   frontmatterRange,
-  hasLoneSurrogate,
+  hasInvalidChars,
   isUuid,
   isWikiPageText,
   noteHash,
@@ -154,7 +154,7 @@ const ANY_SOURCE_ID_LINE = /^\s*["']?javis_source_id["']?\s*:/m;
 export function describeNote(path: string, text: string, cachedSourceId: string | null): LocalNote {
   const malformed = frontmatterRange(text).kind === 'malformed';
   const read = readSourceId(text);
-  const invalidChars = hasLoneSurrogate(text);
+  const invalidChars = hasInvalidChars(text);
   const sent = uploadText(text);
   let sourceId: string | null = read?.valid ? read.id : null;
   let invalidId = read !== null && !read.valid;

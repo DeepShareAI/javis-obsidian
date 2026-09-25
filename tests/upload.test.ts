@@ -320,6 +320,13 @@ describe('uploadOnce: reads', () => {
     });
     expect(describeNote('Journal/c.md', '\n  \n', null).blank).toBe(true);
     expect(describeNote('Journal/d.md', 'bad \ud800', null)).toMatchObject({ invalidChars: true, hash: null });
+    // NUL: the server refuses it in text and title with a 400 (contract
+    // review), so it is a skip the user can see, not a PUT that fails every run.
+    expect(describeNote('Journal/e.md', 'bad \u0000 byte', null)).toMatchObject({ invalidChars: true, hash: null });
+    expect(describeNote('Journal/f.md', '---\ntitle: a\u0000b\n---\nbody\n', null)).toMatchObject({
+      invalidChars: true,
+      hash: null,
+    });
   });
 
   it('describeNote: a malformed note with a damaged id line is invalid-id, one with none is not (review)', () => {

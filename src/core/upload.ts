@@ -101,7 +101,10 @@ export interface LocalNote {
   readable: boolean;
   /** The sent text is whitespace-only (D-PLAN-2). */
   blank: boolean;
-  /** The text holds a lone surrogate and cannot be hashed as sent (D-HASH-5). */
+  /**
+   * The text holds a lone surrogate (D-HASH-5) or a NUL: the server refuses
+   * either with a 400, so the note is skipped as `invalid-chars`, not sent.
+   */
   invalidChars: boolean;
   /** A `javis_source_id` line is present but is not a uuid (D-ID-2). */
   invalidId: boolean;
