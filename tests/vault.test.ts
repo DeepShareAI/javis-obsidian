@@ -317,13 +317,40 @@ describe('the plugin never deletes or trashes a vault file (§F.2)', () => {
     });
   }
 
-  it('no source file calls vault.delete, vault.trash, or .trash(', () => {
+  // Every Obsidian route to removing a file, not just `vault.delete`/`trash`
+  // (review): `fileManager.trashFile` is the API Obsidian recommends, and the
+  // adapter's `remove`/`rmdir`/`trashSystem`/`trashLocal` are the usual way
+  // around the vault. On a vault, adapter or fileManager receiver (optional
+  // chaining included), any of those names; the trash-only names anywhere,
+  // since nothing else in this codebase is called that.
+  const REMOVAL =
+    /\b(vault|adapter|fileManager)\s*\??\.\s*(delete|trash|trashFile|remove|rmdir|trashSystem|trashLocal)\s*\(|\.\s*(trash|trashFile|trashSystem|trashLocal|rmdir)\s*\(/;
+
+  it('the pattern catches every removal API it is meant to', () => {
+    for (const line of [
+      'await this.app.vault.delete(file);',
+      'await app.vault.trash(file, true);',
+      'await this.#app.fileManager.trashFile(file);',
+      'await this.app.vault.adapter.remove(path);',
+      'await adapter.rmdir(dir, true);',
+      'await this.app.vault.adapter.trashSystem(path);',
+      'await vault.adapter?.trashLocal(path);',
+      'await (x as any).trash(file);',
+    ]) {
+      expect(REMOVAL.test(line), line).toBe(true);
+    }
+    for (const line of ['this.opts.secrets.delete(id);', 'owed.delete(id);', 'deps.api.delete(action.sourceId)']) {
+      expect(REMOVAL.test(line), line).toBe(false);
+    }
+  });
+
+  it('no source file calls a vault, adapter or fileManager removal API', () => {
     // Code lines only: the prohibition is quoted in several doc comments.
     const offenders = sources(join(__dirname, '..', 'src')).flatMap((file) =>
       readFileSync(file, 'utf8')
         .split('\n')
         .filter((line) => !/^\s*(\*|\/\/|\/\*)/.test(line))
-        .filter((line) => /vault\.(delete|trash)\s*\(|\.trash\s*\(/.test(line))
+        .filter((line) => REMOVAL.test(line))
         .map((line) => `${file}: ${line.trim()}`),
     );
     expect(offenders).toEqual([]);
