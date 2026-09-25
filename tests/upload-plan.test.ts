@@ -231,6 +231,19 @@ describe('planUpload: restamp', () => {
     ]);
   });
 
+  it('the server path beats the remembered path when they name different carriers (§F.1, review)', () => {
+    // Memory re-learned b.md after a move whose PUT then failed; the server
+    // still has a.md. The note the server knows keeps the id.
+    const r = row(id(1), 'Journal/a.md');
+    const plan = planUpload(
+      [note('Journal/a.md', id(1)), note('Journal/b.md', id(1))],
+      [r],
+      { [id(1)]: mem('Journal/b.md') },
+      settings(),
+    );
+    expect(plan.actions).toEqual([{ kind: 'restamp', path: 'Journal/b.md', oldId: id(1), reason: 'copy' }]);
+  });
+
   it('falls back to the smallest path, deterministically', () => {
     const plan = planUpload([note('Journal/z.md', id(1)), note('Journal/a.md', id(1))], [], {}, settings());
     expect(plan.actions).toMatchObject([
