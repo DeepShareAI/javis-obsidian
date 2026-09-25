@@ -538,8 +538,9 @@ export function planUpload(
   }
 
   // Unreadable (or otherwise unknown) carriers still take part in choosing a
-  // keeper: if the note at the server's path is evicted, a readable copy
-  // elsewhere is still a copy.
+  // keeper, so that a readable note elsewhere cannot claim an id whose
+  // server-path note is merely evicted. But an unknown keeper decides nothing
+  // (below).
   for (const note of listed) {
     if (note.sourceId !== null && !isKnown(note)) {
       const group = byId.get(note.sourceId);
@@ -563,6 +564,19 @@ export function planUpload(
     }
 
     const keeper = chooseKeeper(carriers, row, entry);
+    // An unknown keeper plans nothing for its group this run (review). Its id
+    // is at best a metadataCache hint or a lenient scan (D-PLAN-3), which is
+    // documented to only ever PREVENT a delete. Letting it win the path test
+    // made every readable carrier a `restamp copy` — an edit to the user's
+    // file and a PUT of a brand-new source — on the strength of an id nobody
+    // read from the file. And the hint can be stale: during a rename synced
+    // from another device, iCloud can list the old path as a dataless
+    // placeholder whose cached id is still X while the renamed note (really
+    // X) is already readable. Restamping that note turned a rename into a
+    // delete plus a create, with a full distill. Waiting costs one run: the
+    // presence pass has already kept the row alive, and once the keeper is
+    // readable (or gone) the next run decides from the text.
+    if (!isKnown(keeper)) continue;
     for (const note of carriers) {
       if (!isKnown(note)) continue;
       if (note !== keeper) {

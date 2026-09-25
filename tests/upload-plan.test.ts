@@ -248,16 +248,33 @@ describe('planUpload: restamp', () => {
     ]);
   });
 
-  it('restamps a readable copy when the keeper at the server path is unreadable', () => {
+  it('an unreadable keeper at the server path plans nothing for its id this run (review)', () => {
+    // The id on a.md is only a metadataCache hint, which may be stale (a
+    // rename from another device, a.md a lingering placeholder). It must not
+    // make the readable b.md, which really carries the id, a restamped copy.
     const r = row(id(1), 'Journal/a.md');
     const plan = planUpload(
       [note('Journal/a.md', id(1), { readable: false, hash: null }), note('Journal/b.md', id(1))],
       [r],
-      {},
+      { [id(1)]: mem('Journal/a.md') },
       settings(),
     );
-    expect(plan.actions).toEqual([{ kind: 'restamp', path: 'Journal/b.md', oldId: id(1), reason: 'copy' }]);
+    expect(plan.actions).toEqual([]);
+    expect(plan.held).toEqual([]);
     expect(plan.skipped).toEqual([{ path: 'Journal/a.md', reason: 'unreadable' }]);
+    // The row stays present: no miss is recorded.
+    expect(plan.nextMemory[id(1)]!.missingSince).toBeNull();
+    expect(plan.waiting).toEqual([]);
+  });
+
+  it('an unknown keeper found by memory path also plans nothing (review)', () => {
+    const plan = planUpload(
+      [note('Journal/a.md', id(1), { malformed: true }), note('Journal/b.md', id(1))],
+      [],
+      { [id(1)]: mem('Journal/a.md') },
+      settings(),
+    );
+    expect(plan.actions).toEqual([]);
   });
 });
 
