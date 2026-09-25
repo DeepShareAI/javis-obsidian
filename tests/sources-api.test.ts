@@ -196,6 +196,14 @@ describe('PUT and DELETE outcomes', () => {
     await expect(h.client.delete(ID)).resolves.toEqual({ kind: 'gone' });
     expect(h.calls[0]!.method).toBe('DELETE');
   });
+
+  it('maps DELETE 400 and 409 to rejected, with the server message (review)', async () => {
+    // A refused DELETE must never read as removed: the caller would forget
+    // the id, and a row it no longer remembers is never deleted again.
+    const h = harness([res(400, { detail: 'source_id is not a uuid' }), res(409, 'row is busy')]);
+    await expect(h.client.delete(ID)).resolves.toEqual({ kind: 'rejected', message: 'source_id is not a uuid' });
+    await expect(h.client.delete(ID)).resolves.toEqual({ kind: 'rejected', message: 'row is busy' });
+  });
 });
 
 describe('auth sequence', () => {

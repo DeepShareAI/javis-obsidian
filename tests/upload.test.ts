@@ -52,6 +52,8 @@ class FakeUploadVault implements UploadVault {
   readonly hang = new Set<string>();
   /** Paths whose read rejects. */
   readonly fail = new Set<string>();
+  /** Per-path `javis_source_id` from the metadata cache (D-PLAN-3); null when absent. */
+  readonly cached = new Map<string, string>();
   /** Simulates another device's write landing between our read and our process. */
   beforeProcess: ((path: string) => void) | null = null;
 
@@ -63,7 +65,7 @@ class FakeUploadVault implements UploadVault {
     return [...this.files.keys()]
       .filter((p) => folders.some((f) => p.startsWith(`${f}/`)))
       .sort()
-      .map((path) => ({ path, cachedSourceId: null }));
+      .map((path) => ({ path, cachedSourceId: this.cached.get(path) ?? null }));
   }
 
   readFresh(path: string): Promise<string> {
@@ -259,6 +261,53 @@ describe('uploadOnce: reads', () => {
     expect(result.skipped).toEqual([{ path: 'Journal/a.md', reason: 'unreadable' }]);
   });
 
+  it('an unreadable note keeps its row present through the metadataCache id (D-PLAN-3, review)', async () => {
+    // Another device renamed a.md (id 1) to b.md; here b.md is dataless and
+    // its read hangs, but the cache still knows its id. Row 1 is not missing,
+    // and b.md does not count as an unexplained unknown that holds deletes.
+    const { vault, api, deps } = setup({ 'Journal/b.md': stamped(1), 'Journal/c.md': stamped(3) });
+    vault.hang.add('Journal/b.md');
+    vault.cached.set('Journal/b.md', id(1));
+    api.listing = {
+      sources: [row(id(1), 'Journal/a.md', stamped(1)), row(id(3), 'Journal/c.md', stamped(3)), row(id(9), 'Journal/gone.md', 'x')],
+      counts: {},
+    };
+    const memory = {
+      [id(1)]: { path: 'Journal/a.md', hash: null, bytes: 10, missingSince: null },
+      [id(3)]: { path: 'Journal/c.md', hash: null, bytes: 10, missingSince: null },
+      [id(9)]: { path: 'Journal/gone.md', hash: null, bytes: 1, missingSince: T0 - DEBOUNCE_MS },
+    };
+    const result = await uploadOnce(deps({ memory }));
+    expect(result.nextMemory[id(1)]!.missingSince).toBeNull();
+    expect(result.waiting).toEqual([]);
+    expect(result.held).toEqual([]);
+    // With no ambiguity, the unrelated delete goes out.
+    expect(api.calls).toEqual(['list', `delete ${id(9)}`]);
+  });
+
+  it('a malformed note falls back to the metadataCache id when the lenient scan finds none (review)', async () => {
+    // The fence was broken while the metadata cache still holds the note's
+    // properties from before, id included; the text itself shows no id line.
+    const broken = `---\ntitle: moved\nno close\n`;
+    const { vault, api, deps } = setup({ 'Journal/b.md': broken, 'Journal/c.md': stamped(3) });
+    vault.cached.set('Journal/b.md', id(1));
+    api.listing = {
+      sources: [row(id(1), 'Journal/a.md', stamped(1)), row(id(3), 'Journal/c.md', stamped(3)), row(id(9), 'Journal/gone.md', 'x')],
+      counts: {},
+    };
+    const memory = {
+      [id(1)]: { path: 'Journal/a.md', hash: null, bytes: 10, missingSince: null },
+      [id(3)]: { path: 'Journal/c.md', hash: null, bytes: 10, missingSince: null },
+      [id(9)]: { path: 'Journal/gone.md', hash: null, bytes: 1, missingSince: T0 - DEBOUNCE_MS },
+    };
+    const result = await uploadOnce(deps({ memory }));
+    expect(result.nextMemory[id(1)]!.missingSince).toBeNull();
+    expect(result.waiting).toEqual([]);
+    expect(result.held).toEqual([]);
+    expect(api.calls).toEqual(['list', `delete ${id(9)}`]);
+    expect(vault.files.get('Journal/b.md')).toBe(broken);
+  });
+
   it('describeNote flags malformed notes and finds their id leniently', () => {
     const n = describeNote('Journal/a.md', `---\njavis_source_id: ${id(3)}\nno close\n`, null);
     expect(n).toMatchObject({ malformed: true, sourceId: id(3) });
@@ -298,6 +347,48 @@ describe('uploadOnce: cancellation and failures', () => {
     expect(result.stoppedBy?.code).toBe('cancelled');
     expect(result.uploaded).toBe(1);
     expect(vault.files.get('Journal/b.md')).toBe(stamped(2, 'b\n'));
+  });
+
+  it('stops during the reads when the signal aborts, and reads nothing more (review)', async () => {
+    const controller = new AbortController();
+    const files = { 'Journal/a.md': stamped(1), 'Journal/b.md': stamped(2), 'Journal/c.md': stamped(3) };
+    const { vault, api, deps } = setup(files);
+    for (const path of Object.keys(files)) vault.hang.add(path);
+    const readFresh = vault.readFresh.bind(vault);
+    vault.readFresh = (path: string) => {
+      // The plugin unloads while the first (dataless) read is blocked.
+      controller.abort();
+      return readFresh(path);
+    };
+    const result = await uploadOnce(deps({ signal: controller.signal }));
+    expect(result.stoppedBy?.code).toBe('cancelled');
+    expect(vault.log.filter((l) => l.startsWith('read'))).toEqual(['read Journal/a.md']);
+    expect(api.calls).toEqual(['list']);
+    expect(result.planned).toBe(false);
+  });
+
+  it('a bare 403 stops the run without a step-up: it will be the same for every note (D-AUTH-4, review)', async () => {
+    const stepUp = vi.fn(async () => {});
+    const { api, deps } = setup({ 'Journal/a.md': stamped(1), 'Journal/b.md': stamped(2) });
+    api.anyPut.push(new HttpError(403, 'forbidden'));
+    const result = await uploadOnce(deps({ stepUp }));
+    expect(result.stoppedBy?.code).toBe('http');
+    expect(api.calls).toEqual(['list', `put ${id(1)}`]);
+    expect(stepUp).not.toHaveBeenCalled();
+    expect(result.failures).toEqual([]);
+  });
+
+  it('a refused DELETE is a failure, and the id stays remembered (review)', async () => {
+    const { api, deps } = setup({ 'Journal/a.md': stamped(1) });
+    api.listing = { sources: [row(id(1), 'Journal/a.md', stamped(1)), row(id(9), 'Journal/gone.md', 'x')], counts: {} };
+    api.deleteScript.set(id(9), [{ kind: 'rejected', message: 'row is busy' }]);
+    const memory = { [id(9)]: { path: 'Journal/gone.md', hash: null, bytes: 1, missingSince: T0 - DEBOUNCE_MS } };
+    const result = await uploadOnce(deps({ memory }));
+    expect(api.calls).toEqual(['list', `delete ${id(9)}`]);
+    expect(result.removed).toBe(0);
+    expect(result.failures).toEqual([{ path: 'Journal/gone.md', message: 'could not be removed: row is busy' }]);
+    expect(result.nextMemory[id(9)]).toBeDefined();
+    expect(summarizeUpload(result)).toBe('1 failed');
   });
 
   it('collects a 400 per note and carries on; memory only for the success', async () => {
@@ -646,12 +737,40 @@ describe('Re-upload all survives a failed PUT (review)', () => {
     expect(nextPendingReupload([id(2)], { retryIds: [], sentIds: [id(2)], nextMemory: memory })).toEqual([]);
   });
 
-  it('a later run re-sends only the owed ids', async () => {
+  it('a later run re-sends only the owed ids; the server answers 200 unchanged and the debt clears', async () => {
+    // §E: an equal-hash PUT answers `200 unchanged`, and every re-send is
+    // equal-hash by definition, so that is what the fake must say here.
     const { api, deps } = setup({ 'Journal/a.md': stamped(1), 'Journal/b.md': stamped(2) });
     api.listing = { sources: [row(id(1), 'Journal/a.md', stamped(1)), row(id(2), 'Journal/b.md', stamped(2))], counts: {} };
+    api.putScript.set(id(2), [{ kind: 'unchanged' }]);
     const result = await uploadOnce(deps({ reuploadIds: [id(2)] }));
     expect(api.calls).toEqual(['list', `put ${id(2)}`]);
     expect(result.sentIds).toEqual([id(2)]);
+    expect(result).toMatchObject({ uploaded: 0, unchanged: 1 });
+    expect(nextPendingReupload([id(2)], result)).toEqual([]);
+    expect(result.nextMemory[id(2)]).toMatchObject({ path: 'Journal/b.md', hash: noteHash(stamped(2)) });
+  });
+
+  it('Re-upload all against 200 unchanged: every id counts as sent, nothing stays owed', async () => {
+    const { api, deps } = setup({ 'Journal/a.md': stamped(1), 'Journal/b.md': stamped(2) });
+    api.listing = { sources: [row(id(1), 'Journal/a.md', stamped(1)), row(id(2), 'Journal/b.md', stamped(2))], counts: {} };
+    api.putScript.set(id(1), [{ kind: 'unchanged' }]);
+    api.putScript.set(id(2), [{ kind: 'unchanged' }]);
+    const result = await uploadOnce(deps({ reuploadAll: true }));
+    expect(result.sentIds).toEqual([id(1), id(2)]);
+    expect(result.unchanged).toBe(2);
+    expect(nextPendingReupload([id(1), id(2)], result)).toEqual([]);
+  });
+
+  it('a rename answered 200 unchanged records the new path in memory', async () => {
+    const { api, deps } = setup({ 'Journal/renamed.md': stamped(1) });
+    api.listing = { sources: [row(id(1), 'Journal/old.md', stamped(1))], counts: {} };
+    api.putScript.set(id(1), [{ kind: 'unchanged' }]);
+    const memory = { [id(1)]: { path: 'Journal/old.md', hash: noteHash(stamped(1)), bytes: 7, missingSince: null } };
+    const result = await uploadOnce(deps({ memory }));
+    expect(api.bodies.get(id(1))!.vault_path).toBe('Journal/renamed.md');
+    expect(result.sentIds).toEqual([id(1)]);
+    expect(result.nextMemory[id(1)]).toMatchObject({ path: 'Journal/renamed.md', missingSince: null });
   });
 });
 
