@@ -231,6 +231,9 @@ one. A copied note gets a fresh id automatically.
   only in the cloud) counts as present, never as deleted.
 - If a selected folder suddenly lists no notes at all, nothing under it is
   removed.
+- A note that is suddenly empty, or less than a fifth of the size it was last
+  uploaded at, is not uploaded until you confirm it: its edit is held, even when
+  it is the only change.
 - If one sync would remove or empty more than a few notes — the smaller of 50
   and 20% of your uploaded notes, but at least 5 — every one of those changes
   is held.

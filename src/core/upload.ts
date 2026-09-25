@@ -32,7 +32,13 @@
  *    deleted a whole folder in one go.
  * 4. **More than `min(50, max(5, 20%))` changes holds them all** (§F.3.5).
  *    Suspicious edits (a note that now reads as blank, or shrank by more than
- *    80%) count toward the same threshold and are held with the deletes.
+ *    80%) count toward the same threshold, and are ALWAYS held
+ *    (`suspicious-edit`), cap or no cap: §F.3.5 says their put "is held with
+ *    the deletes" and §H lists "an empty note or 80% shrink held as a
+ *    suspicious edit". Before review a lone one under the cap was sent — the
+ *    less conservative reading, and exactly the truncated-file failure the
+ *    guard exists for: one glitch that cuts a note to 5% of itself would
+ *    re-distill it and strip its contributions from every shared page.
  * 5. **Holds are re-derived on every run** (§F.3.6). Nothing about a hold is
  *    persisted, so a hold disappears the moment its files come back, and a
  *    release (`settings.release`) only applies to what is still held now.
@@ -183,7 +189,7 @@ export type UploadAction =
   /** `path` is the server's last known path, for display. */
   | { kind: 'delete'; sourceId: string; path: string };
 
-export type HoldReason = 'mass-change' | 'vanished-folder' | 'unreadable-ambiguous';
+export type HoldReason = 'mass-change' | 'vanished-folder' | 'unreadable-ambiguous' | 'suspicious-edit';
 
 export interface HeldAction {
   /** `put:<id>` or `delete:<id>`: what a release names. */
@@ -530,7 +536,9 @@ export function planUpload(
 
   // -- the mass-change cap ---------------------------------------------------
   // Every delete past the debounce counts, including ones already held for
-  // another reason: the stricter count (D-PLAN-7).
+  // another reason: the stricter count (D-PLAN-7). Suspicious puts count too,
+  // and are held whether or not the cap trips (rule 4); their reason stays
+  // `suspicious-edit` either way, because that is what the user must judge.
   const tripped = candidates.length + suspicious.length > threshold;
   const held: HeldAction[] = [];
   const emitOrHold = (action: Extract<UploadAction, { kind: 'put' | 'delete' }>, hold: HoldReason | null): void => {
@@ -538,7 +546,7 @@ export function planUpload(
     if (hold === null || release.has(key)) actions.push(action);
     else held.push({ key, action, reason: hold });
   };
-  for (const put of suspicious) emitOrHold(put, tripped ? 'mass-change' : null);
+  for (const put of suspicious) emitOrHold(put, 'suspicious-edit');
   for (const { action, hold } of candidates) emitOrHold(action, hold ?? (tripped ? 'mass-change' : null));
 
   // D-PLAN-16: writes first (by path), then deletes (by id).

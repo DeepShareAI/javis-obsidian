@@ -640,14 +640,27 @@ describe('planUpload: suspicious edits (§F.3.5)', () => {
     const plan = planUpload([...all.notes.slice(5, 9), blanked], all.rows, missingLongAgo(goneRows), settings());
     expect(plan.actions).toEqual([]);
     expect(plan.held).toHaveLength(6);
-    expect(plan.held.find((h) => h.action.kind === 'put')).toMatchObject({ key: `put:${id(10)}`, reason: 'mass-change' });
+    expect(plan.held.find((h) => h.action.kind === 'put')).toMatchObject({ key: `put:${id(10)}`, reason: 'suspicious-edit' });
+    expect(plan.held.filter((h) => h.reason === 'mass-change')).toHaveLength(5);
   });
 
-  it('an empty note alone, under the threshold, is sent (D-PLAN-8)', () => {
+  it('an empty note alone, under the threshold, is still held (D-PLAN-8, review)', () => {
     const s = synced(1);
     const plan = planUpload([{ ...s.note, hash: hashOf('blank'), bytes: 0, blank: true }], [s.row], {}, settings());
-    expect(plan.actions).toMatchObject([{ kind: 'put', reason: 'changed' }]);
-    expect(plan.held).toEqual([]);
+    expect(plan.actions).toEqual([]);
+    expect(plan.held).toMatchObject([{ key: `put:${id(1)}`, reason: 'suspicious-edit', action: { kind: 'put', reason: 'changed' } }]);
+  });
+
+  it('a single >80% shrink, under the threshold, is held; a release sends it', () => {
+    const s = synced(1);
+    const truncated = { ...s.note, hash: hashOf('trunc'), bytes: 150 };
+    const memory = { [id(1)]: mem(s.note.path, { bytes: 1000 }) };
+    const plan = planUpload([truncated], [s.row], memory, settings());
+    expect(plan.actions).toEqual([]);
+    expect(plan.held).toMatchObject([{ key: `put:${id(1)}`, reason: 'suspicious-edit' }]);
+    const released = planUpload([truncated], [s.row], memory, settings({ release: [`put:${id(1)}`] }));
+    expect(released.actions).toMatchObject([{ kind: 'put', sourceId: id(1), reason: 'changed' }]);
+    expect(released.held).toEqual([]);
   });
 
   it('an 80% shrink is suspicious: 199 of 1000 bytes is, 200 is not, and no memory is not', () => {

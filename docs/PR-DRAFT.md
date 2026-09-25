@@ -60,10 +60,10 @@ calls rather than spec text:
   written back (`adopt`) and the edit goes through the normal put and
   shrink checks. (Review fix: before, such a note let the row be deleted and
   the note re-ingested as a new source.)
-- **D-PLAN-8** An emptied or 80%-shrunk note is held only when the mass-change
-  threshold trips, per §F.3.5 "held with the deletes". A single blank edit
-  below the threshold is sent. The stricter alternative (always hold) is one
-  line in `planUpload`.
+- **D-PLAN-8, changed in review.** An emptied or 80%-shrunk note is always
+  held (`suspicious-edit`) and counts toward the mass-change threshold
+  (§F.3.5 "its `put` is held with the deletes"; §H). It used to be held only
+  when the cap tripped, which let one truncated note through on its own.
 - **D-PLAN-9** A blank note with no id is not stamped or uploaded.
 - **D-PLAN-11** An invalid folder selection plans nothing at all.
 - **D-PLAN-13** Deselecting a folder removes its notes after the debounce and

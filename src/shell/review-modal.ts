@@ -21,11 +21,12 @@ const REASON_TEXT: Record<HeldAction['reason'], string> = {
   'mass-change': 'more changes at once than the safety limit allows',
   'vanished-folder': 'its folder currently lists no notes',
   'unreadable-ambiguous': 'a note in your folders could not be read, and might be this one',
+  'suspicious-edit': 'the note is now empty, or less than a fifth of the size it was last uploaded at',
 };
 
 /** One line per held change, for the modal and the settings tab. */
 export function describeHeld(held: HeldAction): string {
-  const verb = held.action.kind === 'delete' ? 'Remove from Javis' : 'Upload (it is now nearly empty)';
+  const verb = held.action.kind === 'delete' ? 'Remove from Javis' : 'Upload the shortened note';
   return `${verb}: ${held.action.path} — held because ${REASON_TEXT[held.reason]}`;
 }
 
