@@ -442,6 +442,23 @@ describe('planUpload: unreadable is unknown (§F.3.2)', () => {
   });
 });
 
+describe('planUpload: never uploads the wiki back (§A, review)', () => {
+  it('skips a note the download wrote, never stamps it, and does not let it vouch for a row', () => {
+    const r = row(id(1), 'Journal/page.md');
+    const plan = planUpload(
+      [note('Journal/page.md', null, { wikiPage: true }), note('Journal/stamped-page.md', id(1), { wikiPage: true })],
+      [r],
+      missingLongAgo([r]),
+      settings(),
+    );
+    expect(plan.skipped).toEqual([
+      { path: 'Journal/page.md', reason: 'wiki-page' },
+      { path: 'Journal/stamped-page.md', reason: 'wiki-page' },
+    ]);
+    expect(plan.actions.filter((a) => a.kind !== 'delete')).toEqual([]);
+  });
+});
+
 describe('planUpload: an id-less note at a tracked path is that source (D-PLAN-4, review)', () => {
   const r = row(id(1), 'Journal/a.md');
   const memory = { [id(1)]: mem('Journal/a.md', { bytes: 5000 }) };

@@ -411,6 +411,15 @@ describe('uploadOnce: an id-less note at a tracked path gets its id back (D-PLAN
   });
 });
 
+describe('describeNote: wiki pages (§A, review)', () => {
+  it('flags a note carrying the download\'s javis_slug or javis_type', () => {
+    expect(describeNote('J/a.md', '---\ntitle: A\njavis_type: concept\njavis_slug: a\n---\nbody\n', null).wikiPage).toBe(true);
+    expect(describeNote('J/a.md', '---\njavis_slug: a\n---\n', null).wikiPage).toBe(true);
+    expect(describeNote('J/a.md', '---\ntitle: A\n---\njavis_slug: in the body\n', null).wikiPage).toBe(false);
+    expect(describeNote('J/a.md', stamped(1), null).wikiPage).toBe(false);
+  });
+});
+
 describe('uploadOnce: step-up before anything is written (review of §C.7)', () => {
   it('a token that visibly cannot write steps up before the first request, so no note is stamped first', async () => {
     let canWrite = false;

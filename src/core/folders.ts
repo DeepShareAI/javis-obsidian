@@ -13,7 +13,14 @@
  *    too, i.e. feed Javis its own output — the loop §A rules out.
  * 2. **Not a wiki folder or inside one.** Same loop, one folder at a time. The
  *    names come from `TYPE_TO_PLURAL`, the same map the download writes with,
- *    compared case-sensitively because that is how the download creates them.
+ *    compared case-INsensitively: on the default macOS (APFS) and Windows
+ *    (NTFS) volumes a user's `sources` folder is the very directory the
+ *    download writes `Sources/…` into, and Obsidian may list those pages
+ *    under either spelling. (An earlier revision compared case-sensitively,
+ *    "because that is how the download creates them"; review showed that lets
+ *    the wiki's own pages be uploaded back.) Every other comparison here —
+ *    the config folder, duplicates, nesting — is case-insensitive for the
+ *    same reason; on a case-sensitive volume that only refuses a selection.
  * 3. **Not the config folder.** Plugin data, workspace state and (for this
  *    plugin) `data.json` live there. `configDir` is a parameter because a vault
  *    can rename it.
@@ -68,13 +75,18 @@ const WIKI_FOLDERS: readonly string[] = [...new Set(Object.values(TYPE_TO_PLURAL
  * not be acted on (D-PLAN-11).
  */
 export function validateFolders(folders: readonly string[], configDir: string): FolderValidation {
-  const config = normalizeFolder(configDir);
+  // Every comparison is on the lowercased form (rule 2); what is returned and
+  // reported is the folder as the user spelled it, normalized.
+  const fold = (path: string): string => path.toLowerCase();
+  const config = fold(normalizeFolder(configDir));
   const normalized = folders.map(normalizeFolder);
+  const folded = normalized.map(fold);
   const ok: string[] = [];
   const errors: FolderError[] = [];
   const seen = new Set<string>();
 
   for (const [index, folder] of normalized.entries()) {
+    const key = folded[index]!;
     const fail = (reason: string): void => {
       errors.push({ folder, reason });
     };
@@ -83,11 +95,11 @@ export function validateFolders(folders: readonly string[], configDir: string): 
       fail('The vault root cannot be uploaded; choose a folder inside it.');
       continue;
     }
-    if (config !== '' && isSameOrUnder(folder, config)) {
+    if (config !== '' && isSameOrUnder(key, config)) {
       fail("Obsidian's settings folder cannot be uploaded.");
       continue;
     }
-    const wiki = WIKI_FOLDERS.find((w) => isSameOrUnder(folder, w));
+    const wiki = WIKI_FOLDERS.find((w) => isSameOrUnder(key, fold(w)));
     if (wiki !== undefined) {
       fail(`${wiki} is one of the wiki folders Javis writes; it cannot be uploaded back.`);
       continue;
@@ -96,22 +108,23 @@ export function validateFolders(folders: readonly string[], configDir: string): 
       fail('Hidden folders cannot be uploaded, because Obsidian does not list their notes.');
       continue;
     }
-    if (seen.has(folder)) {
+    if (seen.has(key)) {
       fail('This folder is already selected.');
       continue;
     }
-    const nest = normalized.find(
-      (other, j) => j !== index && other !== folder && other !== '' && (isUnderFolder(folder, other) || isUnderFolder(other, folder)),
+    const nestAt = folded.findIndex(
+      (other, j) => j !== index && other !== key && other !== '' && (isUnderFolder(key, other) || isUnderFolder(other, key)),
     );
-    if (nest !== undefined) {
+    if (nestAt !== -1) {
+      const nest = normalized[nestAt]!;
       fail(
-        isUnderFolder(folder, nest)
+        isUnderFolder(key, folded[nestAt]!)
           ? `This folder is inside ${nest}, which is also selected.`
           : `This folder contains ${nest}, which is also selected.`,
       );
       continue;
     }
-    seen.add(folder);
+    seen.add(key);
     ok.push(folder);
   }
   return { ok, errors };

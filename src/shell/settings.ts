@@ -44,6 +44,7 @@ const SKIP_TEXT: Record<string, string> = {
   'invalid-id': 'its javis_source_id is not a valid id; not uploaded',
   'invalid-chars': 'contains invalid characters; not uploaded',
   blank: 'empty; not uploaded',
+  'wiki-page': 'a page Javis wrote; the wiki is never uploaded back to itself',
 };
 
 /** Bounds on the interval field. Below a minute the plugin is a busy-loop. */
@@ -419,13 +420,14 @@ export class JavisSettingTab extends PluginSettingTab {
         last.invalidFolders.map((e) => `${e.folder || '(vault root)'}: ${e.reason}`),
       );
       renderList(containerEl, 'Failed', last.failures.map((f) => `${f.path}: ${f.message}`));
-      for (const reason of ['oversize', 'unreadable', 'unstampable', 'invalid-id', 'invalid-chars'] as const) {
+      for (const reason of ['oversize', 'unreadable', 'unstampable', 'invalid-id', 'invalid-chars', 'wiki-page'] as const) {
         const title = {
           oversize: 'Too large',
           unreadable: 'Unreadable',
           unstampable: 'Unstampable',
           'invalid-id': 'Invalid id',
           'invalid-chars': 'Invalid characters',
+          'wiki-page': 'Javis wiki pages',
         }[reason];
         renderList(
           containerEl,

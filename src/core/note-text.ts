@@ -321,6 +321,20 @@ export function readSourceId(text: string): { id: string; valid: boolean } | nul
   return { id, valid: isUuid(id) };
 }
 
+/**
+ * True when the note is one the download wrote: its frontmatter block has a
+ * top-level `javis_slug:` or `javis_type:` line, the keys `mergeServerKeys`
+ * writes into every wiki page and that nothing else in the plugin writes.
+ *
+ * Defense in depth for §A's "there is no loop" (review): folder validation is
+ * the first guard, but a wiki page can still land in a selected folder — a
+ * case-insensitive volume, a page the user moved by hand — and uploading it
+ * would feed the wiki its own output. Such a note is skipped, never stamped.
+ */
+export function isWikiPageText(text: string): boolean {
+  return findTopLevelLine(text, 'javis_slug') !== null || findTopLevelLine(text, 'javis_type') !== null;
+}
+
 /** §B.1 `title` is `String(500)`. */
 export const MAX_TITLE_CHARS = 500;
 

@@ -96,6 +96,12 @@ export interface LocalNote {
   invalidId: boolean;
   /** An opening `---` with no closing fence: the stamp refuses it (§F.2). */
   malformed: boolean;
+  /**
+   * A page the download wrote (`isWikiPageText`). Skipped as `wiki-page` and
+   * otherwise treated as unlisted: never stamped, never sent, and it cannot
+   * make a row look present (§A). Optional so older fixtures stay valid.
+   */
+  wikiPage?: boolean;
 }
 
 /** The last undo report the server recorded for a row (§D.4). */
@@ -186,7 +192,14 @@ export interface HeldAction {
   reason: HoldReason;
 }
 
-export type SkipReason = 'unreadable' | 'oversize' | 'blank' | 'invalid-id' | 'invalid-chars' | 'unstampable';
+export type SkipReason =
+  | 'unreadable'
+  | 'oversize'
+  | 'blank'
+  | 'invalid-id'
+  | 'invalid-chars'
+  | 'unstampable'
+  | 'wiki-page';
 
 export interface SkippedNote {
   path: string;
@@ -295,9 +308,11 @@ export function planUpload(
   // D-PLAN-12: the core does not trust the listing. A note outside the
   // selection or not markdown is treated as unlisted, so it cannot count as
   // present either.
-  const listed = local.filter(
+  const inSelection = local.filter(
     (n) => n.path.toLowerCase().endsWith('.md') && folders.some((f) => isUnderFolder(n.path, f)),
   );
+  // §A: the wiki's own pages are never user notes, wherever they sit.
+  const listed = inSelection.filter((n) => n.wikiPage !== true);
 
   const rows = new Map<string, ServerSource>();
   for (const row of server) rows.set(row.source_id.toLowerCase(), row);
@@ -306,7 +321,9 @@ export function planUpload(
   const release = new Set(settings.release);
 
   const actions: UploadAction[] = [];
-  const skipped: SkippedNote[] = [];
+  const skipped: SkippedNote[] = inSelection
+    .filter((n) => n.wikiPage === true)
+    .map((n) => ({ path: n.path, reason: 'wiki-page' as const }));
   const suspicious: Extract<UploadAction, { kind: 'put' }>[] = [];
 
   // -- presence ------------------------------------------------------------

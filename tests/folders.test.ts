@@ -45,6 +45,19 @@ describe('validateFolders', () => {
     expect(ok(['Concepts/Sub']).errors).toHaveLength(1);
   });
 
+  it('rejects a wiki folder in any case: on APFS and NTFS "sources" IS "Sources" (review)', () => {
+    for (const folder of ['sources', 'CONCEPTS', 'sOuRcEs/sub']) {
+      expect(ok([folder]).errors[0]!.reason).toMatch(/wiki/i);
+    }
+    expect(ok(['.OBSIDIAN']).errors).toHaveLength(1);
+    expect(validateFolders(['Config/x'], 'config').errors).toHaveLength(1);
+  });
+
+  it('treats folders differing only in case as the same folder', () => {
+    expect(ok(['Journal', 'journal']).errors.map((e) => e.folder)).toEqual(['journal']);
+    expect(ok(['A', 'a/b']).ok).toEqual([]);
+  });
+
   it('treats a name prefix as a different folder', () => {
     expect(ok(['Conceptsfoo', 'Journal2', 'Journal']).errors).toEqual([]);
   });

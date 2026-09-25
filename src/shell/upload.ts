@@ -41,6 +41,7 @@ import {
   frontmatterRange,
   hasLoneSurrogate,
   isUuid,
+  isWikiPageText,
   noteHash,
   noteTitle,
   readSourceId,
@@ -138,6 +139,7 @@ export function describeNote(path: string, text: string, cachedSourceId: string 
     invalidChars,
     invalidId: read !== null && !read.valid,
     malformed,
+    wikiPage: isWikiPageText(text),
   };
 }
 
