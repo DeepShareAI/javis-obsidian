@@ -506,11 +506,12 @@ describe('planUpload: unreadable is unknown (§F.3.2)', () => {
 });
 
 describe('planUpload: never uploads the wiki back (§A, review)', () => {
-  it('skips a note the download wrote, never stamps it, and does not let it vouch for a row', () => {
-    const r = row(id(1), 'Journal/page.md');
+  it('skips a note the download wrote, never stamps it, and it vouches for no unrelated row', () => {
+    const r = row(id(1), 'Journal/gone.md');
+    const keep = synced(2);
     const plan = planUpload(
-      [note('Journal/page.md', null, { wikiPage: true }), note('Journal/stamped-page.md', id(1), { wikiPage: true })],
-      [r],
+      [keep.note, note('Journal/page.md', null, { wikiPage: true }), note('Journal/stamped-page.md', id(9), { wikiPage: true })],
+      [r, keep.row],
       missingLongAgo([r]),
       settings(),
     );
@@ -518,7 +519,27 @@ describe('planUpload: never uploads the wiki back (§A, review)', () => {
       { path: 'Journal/page.md', reason: 'wiki-page' },
       { path: 'Journal/stamped-page.md', reason: 'wiki-page' },
     ]);
-    expect(plan.actions.filter((a) => a.kind !== 'delete')).toEqual([]);
+    expect(plan.actions).toEqual([{ kind: 'delete', sourceId: id(1), path: 'Journal/gone.md' }]);
+  });
+
+  it('a tracked note that gains javis_type is skipped but still present: no put, no delete (review)', () => {
+    const r = row(id(1), 'Journal/Meeting.md');
+    // Carries the live id, anywhere in the selection.
+    const carried = planUpload(
+      [note('Journal/Renamed.md', id(1), { wikiPage: true, hash: hashOf('x') })],
+      [r],
+      missingLongAgo([r]),
+      settings(),
+    );
+    expect(carried.actions).toEqual([]);
+    expect(carried.held).toEqual([]);
+    expect(carried.waiting).toEqual([]);
+    expect(carried.skipped).toEqual([{ path: 'Journal/Renamed.md', reason: 'wiki-page' }]);
+    expect(carried.nextMemory[id(1)]!.missingSince).toBeNull();
+    // Carries no id, but sits at the live row's path.
+    const atPath = planUpload([note('Journal/Meeting.md', null, { wikiPage: true })], [r], missingLongAgo([r]), settings());
+    expect(atPath.actions).toEqual([]);
+    expect(atPath.waiting).toEqual([]);
   });
 });
 

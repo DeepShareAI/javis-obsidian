@@ -104,9 +104,11 @@ export interface LocalNote {
   /** An opening `---` with no closing fence: the stamp refuses it (§F.2). */
   malformed: boolean;
   /**
-   * A page the download wrote (`isWikiPageText`). Skipped as `wiki-page` and
-   * otherwise treated as unlisted: never stamped, never sent, and it cannot
-   * make a row look present (§A). Optional so older fixtures stay valid.
+   * A page the download wrote (`isWikiPageText`). Skipped as `wiki-page`:
+   * never stamped, never sent, never adopted (§A). It still keeps a live row
+   * present when it carries that row's id or sits at its path, because a
+   * tracked note that gained a `javis_type:` line is not a deleted one
+   * (review). Optional so older fixtures stay valid.
    */
   wikiPage?: boolean;
 }
@@ -358,6 +360,21 @@ export function planUpload(
   for (const note of listed) {
     if (note.sourceId !== null) presentIds.add(note.sourceId);
     if (!isKnown(note)) unknownPaths.add(note.path);
+  }
+  // A wiki-looking note (a `javis_slug`/`javis_type` line) is never sent, but
+  // being skipped is not being absent (review): a user can paste a wiki
+  // page's properties into their own tracked note, or a template plugin can
+  // add one, and neither is a delete. So one that carries a live row's id,
+  // or sits at a live row's server or remembered path, keeps that row
+  // present. It can never cause a put, a stamp or an adoption, and it cannot
+  // make an unrelated row look present.
+  for (const note of inSelection) {
+    if (note.wikiPage !== true) continue;
+    if (note.sourceId !== null && rows.get(note.sourceId)?.deleted === false) presentIds.add(note.sourceId);
+    for (const row of liveRows) {
+      const id = row.source_id.toLowerCase();
+      if (row.vault_path === note.path || memory[id]?.path === note.path) presentIds.add(id);
+    }
   }
   const carried = new Set(presentIds);
   for (const row of liveRows) {
