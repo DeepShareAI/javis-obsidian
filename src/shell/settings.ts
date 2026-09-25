@@ -20,10 +20,31 @@
 
 import { App, Notice, PluginSettingTab, Setting } from 'obsidian';
 
-import type { AuthStatus } from './contracts';
+import { normalizeFolder, validateFolders } from '../core/folders';
+import type { AuthStatus, LastUploadReport } from './contracts';
 import { DEFAULT_BASE_URL, DEFAULT_SETTINGS } from './contracts';
 import { isJavisError } from './errors';
+import { FolderSuggest } from './folder-suggest';
+import { describeHeld } from './review-modal';
 import type JavisWikiSyncPlugin from '../main';
+
+/** D-UI-2: each list in the Upload section shows at most this many entries. */
+const LIST_LIMIT = 10;
+
+/** Spec 2026-09-24 §D.4 / §F.4, plan D-UI-4. */
+export const LIMITATION_SENTENCE =
+  'When a note leaves the selected folders, Javis rebuilds the pages it fed from their other ' +
+  "sources. Pages created before provenance tracking can't be rebuilt, so they are marked and " +
+  'may still mention it.';
+
+const SKIP_TEXT: Record<string, string> = {
+  unreadable: 'could not be read (it may be stored only in the cloud); left alone',
+  oversize: 'larger than 256 KB; not uploaded',
+  unstampable: 'its properties block has no closing ---; not uploaded',
+  'invalid-id': 'its javis_source_id is not a valid id; not uploaded',
+  'invalid-chars': 'contains invalid characters; not uploaded',
+  blank: 'empty; not uploaded',
+};
 
 /** Bounds on the interval field. Below a minute the plugin is a busy-loop. */
 export const MIN_INTERVAL_MINUTES = 5;
@@ -70,6 +91,7 @@ export class JavisSettingTab extends PluginSettingTab {
     this.renderConnection(containerEl);
     this.renderTriggers(containerEl);
     this.renderStatus(containerEl);
+    this.renderUpload(containerEl);
   }
 
   hide(): void {
@@ -142,7 +164,9 @@ export class JavisSettingTab extends PluginSettingTab {
           .onClick(async () => {
             button.setDisabled(true).setButtonText('Waiting for your browser…');
             try {
-              await this.plugin.auth.connect();
+              // With an upload folder selected, ask for the write scope up
+              // front (§C.7); otherwise exactly what 0.1.x asked for.
+              await this.plugin.auth.connect(this.plugin.uploadConnectOptions());
               await this.plugin.saveSettings();
               new Notice('Javis: connected.');
             } catch (error) {
@@ -253,6 +277,215 @@ export class JavisSettingTab extends PluginSettingTab {
         }),
       );
   }
+
+  // -- 2026-09-24 §F.4: the upload half ------------------------------------
+
+  private renderUpload(containerEl: HTMLElement): void {
+    const settings = this.plugin.settings;
+    new Setting(containerEl).setName('Upload your notes').setHeading();
+
+    // §F.5: the disclosure, short; the README has the full version.
+    containerEl.createEl('p', {
+      cls: 'setting-item-description',
+      text:
+        'Optional, and off until you choose a folder. The full text of every note in the folders ' +
+        'you choose is sent to your Javis server, stored there, and turned into wiki pages by an ' +
+        'AI model on the server. The plugin adds one line, javis_source_id, to each uploaded ' +
+        "note's properties so a rename is not mistaken for a new note. Removing a note from these " +
+        'folders deletes its stored text from the server; nothing in this vault is ever deleted.',
+    });
+
+    // 1. The folder picker and the removable list.
+    let pending = '';
+    new Setting(containerEl)
+      .setName('Add a folder')
+      .setDesc('Every note inside it, including subfolders, is uploaded. The wiki folders cannot be chosen.')
+      .addText((text) => {
+        text.setPlaceholder('Journal').onChange((value) => {
+          pending = value;
+        });
+        new FolderSuggest(this.app, text.inputEl, () => this.plugin.settings.uploadFolders);
+      })
+      .addButton((button) =>
+        button.setButtonText('Add').onClick(async () => {
+          const folder = normalizeFolder(pending);
+          const next = [...settings.uploadFolders, folder];
+          const { errors } = validateFolders(next, this.app.vault.configDir);
+          if (errors.length > 0) {
+            new Notice(`Javis: ${errors.map((e) => e.reason).join(' ')}`, 8_000);
+            return;
+          }
+          if (this.app.vault.getFolderByPath(folder) === null) {
+            new Notice(`Javis: there is no folder named ${folder} in this vault.`);
+            return;
+          }
+          const wasEmpty = settings.uploadFolders.length === 0;
+          settings.uploadFolders = next;
+          await this.plugin.saveSettings();
+          if (wasEmpty && this.plugin.needsUploadReconnect()) {
+            new Notice('Javis: reconnect once to allow uploads — see the button in the Upload section.', 10_000);
+          }
+          this.display();
+        }),
+      );
+
+    for (const folder of settings.uploadFolders) {
+      new Setting(containerEl)
+        .setName(folder)
+        .setDesc(
+          // D-PLAN-13: deselecting is moving the notes out.
+          'Removing this folder removes its notes from Javis after the usual safety checks.',
+        )
+        .addExtraButton((button) =>
+          button
+            .setIcon('x')
+            .setTooltip('Stop uploading this folder')
+            .onClick(async () => {
+              settings.uploadFolders = settings.uploadFolders.filter((f) => f !== folder);
+              await this.plugin.saveSettings();
+              this.display();
+            }),
+        );
+    }
+
+    // 2. D-AUTH-3: a read-only connection prompts one reconnect.
+    if (this.plugin.needsUploadReconnect()) {
+      new Setting(containerEl)
+        .setName('Allow uploads')
+        .setDesc('This device is connected read-only. Reconnect once to let Javis store notes you upload.')
+        .addButton((button) =>
+          button
+            .setButtonText('Reconnect to allow uploads')
+            .setCta()
+            .onClick(async () => {
+              button.setDisabled(true).setButtonText('Waiting for your browser…');
+              try {
+                await this.plugin.auth.connect(this.plugin.uploadConnectOptions());
+                await this.plugin.saveSettings();
+                new Notice(
+                  this.plugin.needsUploadReconnect()
+                    ? 'Javis: connected, but uploads were not allowed.'
+                    : 'Javis: uploads allowed.',
+                );
+              } catch (error) {
+                new Notice(`Javis: ${describe(error)}`, 10_000);
+              } finally {
+                this.display();
+              }
+            }),
+        );
+    }
+
+    // 3. Upload on edit.
+    new Setting(containerEl)
+      .setName('Upload when a note is edited')
+      .setDesc('Off by default. Uploads 2 minutes after you stop typing; otherwise notes upload on each sync.')
+      .addToggle((toggle) =>
+        toggle.setValue(settings.uploadOnEdit).onChange(async (value) => {
+          settings.uploadOnEdit = value;
+          await this.plugin.saveSettings();
+        }),
+      );
+
+    // 4. The last run: counts, failures, skipped notes.
+    const last = settings.lastUpload;
+    if (last !== null) {
+      containerEl.createEl('p', {
+        cls: 'setting-item-description',
+        text: `Last upload ${new Date(last.at).toLocaleString()} — ${last.summary}`,
+      });
+      const counts = Object.entries(last.counts);
+      if (counts.length > 0) {
+        containerEl.createEl('p', {
+          cls: 'setting-item-description',
+          text: `On the server: ${counts.map(([status, n]) => `${n} ${status}`).join(', ')}`,
+        });
+      }
+      renderList(
+        containerEl,
+        'Folders that need attention',
+        last.invalidFolders.map((e) => `${e.folder || '(vault root)'}: ${e.reason}`),
+      );
+      renderList(containerEl, 'Failed', last.failures.map((f) => `${f.path}: ${f.message}`));
+      for (const reason of ['oversize', 'unreadable', 'unstampable', 'invalid-id', 'invalid-chars'] as const) {
+        const title = {
+          oversize: 'Too large',
+          unreadable: 'Unreadable',
+          unstampable: 'Unstampable',
+          'invalid-id': 'Invalid id',
+          'invalid-chars': 'Invalid characters',
+        }[reason];
+        renderList(
+          containerEl,
+          title,
+          last.skipped.filter((n) => n.reason === reason).map((n) => `${n.path}: ${SKIP_TEXT[reason]}`),
+        );
+      }
+
+      // 5. Held changes, waiting removals, undo reports.
+      renderList(containerEl, 'Held changes', last.held.map(describeHeld));
+      if (last.held.length > 0) {
+        new Setting(containerEl)
+          .setName('Review pending changes')
+          .setDesc('Also available from the command palette.')
+          .addButton((button) => button.setButtonText('Review').onClick(() => this.plugin.openReview()));
+      }
+      renderList(
+        containerEl,
+        'Will be removed from Javis if still missing',
+        last.waiting.map((w) => `${w.path}: after ${new Date(w.eligibleAt).toLocaleTimeString()}`),
+      );
+      renderList(
+        containerEl,
+        'Recently removed',
+        last.undoReports.map((u) => describeUndo(u.path, u.report)),
+      );
+    }
+
+    // 6. Re-upload all.
+    new Setting(containerEl)
+      .setName('Re-upload all')
+      .setDesc('Sends every note in the selected folders again, even unchanged ones. The safety checks still apply.')
+      .addButton((button) =>
+        button.setButtonText('Re-upload all').onClick(async () => {
+          if (settings.uploadFolders.length === 0) {
+            new Notice('Javis: choose a folder to upload first.');
+            return;
+          }
+          button.setDisabled(true);
+          settings.pendingReuploadAll = true;
+          await this.plugin.saveSettings();
+          try {
+            await this.plugin.syncNow('settings', { uploadOnly: true, reuploadAll: true });
+          } finally {
+            this.display();
+          }
+        }),
+      );
+
+    // 7. The §D.4 limitation, stated where the choice is made.
+    containerEl.createEl('p', { cls: 'setting-item-description', text: LIMITATION_SENTENCE });
+  }
+}
+
+/** "a, b, c and N more" style list of at most `LIST_LIMIT` lines under a heading. */
+function renderList(containerEl: HTMLElement, title: string, lines: readonly string[]): void {
+  if (lines.length === 0) return;
+  const wrap = containerEl.createDiv({ cls: 'setting-item-description' });
+  wrap.createEl('strong', { text: `${title} (${lines.length})` });
+  const list = wrap.createEl('ul');
+  for (const line of lines.slice(0, LIST_LIMIT)) list.createEl('li', { text: line });
+  if (lines.length > LIST_LIMIT) list.createEl('li', { text: `and ${lines.length - LIST_LIMIT} more` });
+}
+
+/** §D.4: "removed from 4 pages; 2 older pages may still mention it". */
+export function describeUndo(path: string, report: LastUploadReport['undoReports'][number]['report']): string {
+  const removed = report.pages_tombstoned + report.pages_rebuilt;
+  let line = `${path}: removed from ${removed} page${removed === 1 ? '' : 's'}`;
+  if (report.pages_marked_stale > 0) {
+    line += `; ${report.pages_marked_stale} older page${report.pages_marked_stale === 1 ? '' : 's'} may still mention it`;
+  }
+  return line;
 }
 
 /** Keep a typo out of `setInterval`. A blank or absurd value keeps the old one. */
