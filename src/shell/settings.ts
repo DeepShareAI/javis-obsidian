@@ -345,7 +345,8 @@ export class JavisSettingTab extends PluginSettingTab {
         .setName(folder)
         .setDesc(
           // D-PLAN-13: deselecting is moving the notes out.
-          'Removing this folder removes its notes from Javis after the usual safety checks.',
+          'Removing this folder removes its notes from Javis after the usual safety checks ' +
+            '(a 5-minute wait, and a review first if many notes would go), even if it is the last one.',
         )
         .addExtraButton((button) =>
           button

@@ -397,11 +397,12 @@ export default class JavisWikiSyncPlugin extends Plugin {
 
   /**
    * The upload half (2026-09-24 §F.2). Returns the status-bar line, or null
-   * when there is nothing to say (no folder selected). Never throws past
+   * when there is nothing to say (no folder selected, nothing left to remove).
+   * Never throws past
    * `uploadOnce`, which never throws.
    */
   async #upload(trigger: SyncTrigger, opts: SyncOptions, signal: AbortSignal): Promise<string | null> {
-    if (this.settings.uploadFolders.length === 0) return null; // D-RUN-2
+    if (!this.#uploadsActive()) return null; // D-RUN-2
     const interactive = INTERACTIVE.has(trigger);
 
     // D-RUN-3: a background run with a token that visibly cannot write (no
@@ -488,7 +489,18 @@ export default class JavisWikiSyncPlugin extends Plugin {
    * `connectOptionsFor` for why the resource is no longer conditional.
    */
   uploadConnectOptions(): ConnectOptions {
-    return connectOptionsFor(this.settings.baseUrl, this.settings.uploadFolders.length > 0);
+    return connectOptionsFor(this.settings.baseUrl, this.#uploadsActive());
+  }
+
+  /**
+   * True while the upload half has work: a folder is selected, or none is but
+   * notes uploaded earlier are still remembered, i.e. the last folder was
+   * deselected and its sources still have to be removed (D-PLAN-13). False
+   * only for an install that never opted in, or has finished cleaning up —
+   * which then makes exactly the 0.1.x requests (D-RUN-2).
+   */
+  #uploadsActive(): boolean {
+    return this.settings.uploadFolders.length > 0 || Object.keys(this.settings.uploadMemory).length > 0;
   }
 
   /**

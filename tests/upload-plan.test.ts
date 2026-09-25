@@ -281,11 +281,41 @@ describe('planUpload: defensive filters', () => {
     expect(plan.nextMemory).toEqual(missingLongAgo([r]));
   });
 
-  it('no folder selected plans nothing, even with live rows', () => {
+  it('deselecting one of two folders removes its notes after the debounce (D-PLAN-13)', () => {
+    const inbox = synced(1, 'Inbox');
+    const journal = synced(2, 'Journal');
+    // The user removed Inbox; its note is still in the vault but no longer listed.
+    const run1 = planUpload([journal.note], [inbox.row, journal.row], {}, settings({ folders: ['Journal'] }));
+    expect(run1.actions).toEqual([]);
+    expect(run1.waiting).toMatchObject([{ sourceId: id(1) }]);
+    const run2 = planUpload(
+      [journal.note],
+      [inbox.row, journal.row],
+      run1.nextMemory,
+      settings({ folders: ['Journal'], now: T0 + DEBOUNCE_MS }),
+    );
+    expect(run2.actions).toEqual([{ kind: 'delete', sourceId: id(1), path: inbox.row.vault_path }]);
+  });
+
+  it('deselecting the LAST folder removes its notes too, behind the same debounce and cap (D-PLAN-13)', () => {
     const r = row(id(1), 'Journal/a.md');
-    const plan = planUpload([], [r], missingLongAgo([r]), settings({ folders: [] }));
-    expect(plan.actions).toEqual([]);
-    expect(plan.waiting).toEqual([]);
+    const run1 = planUpload([], [r], {}, settings({ folders: [] }));
+    expect(run1.actions).toEqual([]);
+    expect(run1.waiting).toMatchObject([{ sourceId: id(1) }]);
+    const run2 = planUpload([], [r], run1.nextMemory, settings({ folders: [], now: T0 + DEBOUNCE_MS }));
+    expect(run2.actions).toEqual([{ kind: 'delete', sourceId: id(1), path: 'Journal/a.md' }]);
+    // Many at once: the mass cap still asks first.
+    const many = syncedMany(6);
+    const held = planUpload([], many.rows, missingLongAgo(many.rows), settings({ folders: [] }));
+    expect(held.actions).toEqual([]);
+    expect(held.held).toHaveLength(6);
+    expect(held.held.every((h) => h.reason === 'mass-change')).toBe(true);
+  });
+
+  it('with nothing selected, memory for rows that are no longer live is dropped', () => {
+    const dead = row(id(1), 'Journal/a.md', { deleted: true, status: 'deleted' });
+    const plan = planUpload([], [dead], { [id(1)]: mem('Journal/a.md'), [id(2)]: mem('Journal/b.md') }, settings({ folders: [] }));
+    expect(plan.nextMemory).toEqual({});
   });
 
   it('orders writes by path, then deletes by id (D-PLAN-16)', () => {

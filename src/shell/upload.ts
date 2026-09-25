@@ -28,8 +28,10 @@
  * 5. **It never throws** (D-RUN-7). Whatever happens, the caller gets
  *    `nextMemory` back and persists it, so the debounce clock and every
  *    successful PUT/DELETE survive a run that stopped halfway.
- * 6. **No folder selected → no request at all** (D-RUN-2). A 0.2.0 install
- *    that never opts in makes exactly the 0.1.x requests.
+ * 6. **No folder selected and nothing remembered → no request at all**
+ *    (D-RUN-2). A 0.2.0 install that never opts in makes exactly the 0.1.x
+ *    requests. With remembered uploads the run goes on, so deselecting the
+ *    last folder removes its notes like deselecting any other (D-PLAN-13).
  * 7. **No write grant → step up (or stop) before the first request**, so no
  *    note is stamped by a run that cannot upload it (review of §C.7).
  */
@@ -213,8 +215,10 @@ export async function uploadOnce(deps: UploadDeps): Promise<UploadResult> {
     ran: false,
   };
 
-  // Rule 6.
-  if (deps.folders.length === 0) return result;
+  // Rule 6. "Never opted in" is no folder AND no remembered upload: with
+  // memory left over, the last folder was deselected, and its rows still have
+  // to be removed (D-PLAN-13), so the run goes on with an empty selection.
+  if (deps.folders.length === 0 && Object.keys(deps.memory).length === 0) return result;
   result.ran = true;
 
   // An invalid selection makes no request either: nothing it could learn would
@@ -323,6 +327,8 @@ async function readNotes(
   deps: UploadDeps,
   texts: Map<string, string>,
 ): Promise<LocalNote[]> {
+  // Nothing selected: nothing to list (and nothing a listing could return).
+  if (folders.length === 0) return [];
   const listed = await vault.listNotesIn(folders);
   const notes: LocalNote[] = [];
   for (const { path, cachedSourceId } of listed) {

@@ -508,11 +508,24 @@ describe('uploadOnce: deletes and holds', () => {
 });
 
 describe('uploadOnce: nothing to do without a valid selection', () => {
-  it('no folders -> no API call at all (D-RUN-2)', async () => {
+  it('no folders and nothing ever uploaded -> no API call at all (D-RUN-2)', async () => {
     const { api, deps } = setup({ 'Journal/a.md': 'x' });
     const result = await uploadOnce(deps({ folders: [] }));
     expect(api.calls).toEqual([]);
     expect(result.ran).toBe(false);
+  });
+
+  it('no folders but remembered uploads -> the delete half still runs (D-PLAN-13)', async () => {
+    const { vault, api, deps } = setup({ 'Journal/a.md': stamped(1) });
+    api.listing = { sources: [row(id(1), 'Journal/a.md', stamped(1))], counts: {} };
+    const memory = { [id(1)]: { path: 'Journal/a.md', hash: null, bytes: 10, missingSince: T0 - DEBOUNCE_MS } };
+    const result = await uploadOnce(deps({ folders: [], memory }));
+    expect(result.ran).toBe(true);
+    expect(api.calls).toEqual(['list', `delete ${id(1)}`]);
+    expect(result.removed).toBe(1);
+    expect(result.nextMemory).toEqual({});
+    // Nothing in the vault is read or touched.
+    expect(vault.log).toEqual([]);
   });
 
   it('invalid folders -> no API call, reported', async () => {

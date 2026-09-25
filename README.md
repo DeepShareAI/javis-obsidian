@@ -202,7 +202,8 @@ it, so it can re-distill the note without asking the plugin again. Editing a
 note uploads the new text and the wiki follows, including removals.
 
 **How it is removed.** Delete a note, move it out of the selected folders, or
-remove its folder from the list. After the safety checks below, the plugin asks
+remove its folder from the list (the last folder too: the plugin keeps syncing
+until everything it uploaded is removed). After the safety checks below, the plugin asks
 the server to remove it: the stored text is deleted from the server's database
 at that moment, pages only that note produced are removed, and pages it shared
 with other sources are rebuilt from those sources. Pages created before this

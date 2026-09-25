@@ -39,6 +39,13 @@
  * 6. **An invalid selection plans nothing** (D-PLAN-11). A folder that is the
  *    root, a wiki folder, or nested must not be able to produce deletes.
  * 7. **No clock.** `settings.now` is the only time this function knows.
+ * 8. **Deselecting is moving out, the last folder included** (D-PLAN-13).
+ *    A row under a folder that is no longer selected is missing, goes through
+ *    the debounce and the mass cap, and is deleted — whether or not another
+ *    folder is still selected. The settings text and the README promise this,
+ *    and before review it silently did not hold for the last folder: its
+ *    notes' full text stayed on the server for good. The vanished-folder hold
+ *    does not apply: it guards selected folders, not deselected ones.
  */
 
 import { isUnderFolder, validateFolders } from './folders';
@@ -271,13 +278,19 @@ export function planUpload(
     threshold,
   });
 
-  // Rule 6. An empty selection plans nothing either: the shell does not run the
-  // upload half then (D-RUN-2), and a caller that did must not get "every row
-  // is missing" out of it.
+  // Rule 6.
   const validation = validateFolders(settings.folders, settings.configDir);
   if (validation.errors.length > 0) return empty(validation.errors);
   const folders = validation.ok;
-  if (folders.length === 0) return empty([]);
+  // An EMPTY selection is valid and is planned like any other (rule 8): every
+  // live row is then missing, which is what deselecting the last folder
+  // means. Memory for ids with no live row is dropped, so that once the last
+  // delete lands the shell has nothing left to clean up and goes back to
+  // making no request at all (D-RUN-2).
+  if (folders.length === 0) {
+    const live = new Set(server.filter((r) => !r.deleted).map((r) => r.source_id.toLowerCase()));
+    for (const id of Object.keys(nextMemory)) if (!live.has(id)) delete nextMemory[id];
+  }
 
   // D-PLAN-12: the core does not trust the listing. A note outside the
   // selection or not markdown is treated as unlisted, so it cannot count as
