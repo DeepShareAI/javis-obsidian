@@ -46,7 +46,13 @@ import { DEFAULT_SETTINGS } from './shell/contracts';
 import { isJavisError } from './shell/errors';
 import { ReviewPendingModal } from './shell/review-modal';
 import { JavisSettingTab, describe } from './shell/settings';
-import { sanitizeSettings } from './shell/settings-load';
+import {
+  MISSING_SINCE_STORAGE_KEY,
+  joinMissing,
+  sanitizeMissing,
+  sanitizeSettings,
+  splitMissing,
+} from './shell/settings-load';
 import { JavisSourcesApiClient } from './shell/sources-api';
 import { summarize, syncOnce } from './shell/sync';
 import {
@@ -403,7 +409,8 @@ export default class JavisWikiSyncPlugin extends Plugin {
       api: this.#sources,
       vault: this.#vault,
       folders: this.settings.uploadFolders,
-      memory: this.settings.uploadMemory,
+      // The synced memory with THIS device's debounce clocks (§F.3.3, review).
+      memory: joinMissing(this.settings.uploadMemory, this.#loadMissing()),
       now: Date.now(),
       newId: () => crypto.randomUUID(),
       reuploadAll,
@@ -417,8 +424,11 @@ export default class JavisWikiSyncPlugin extends Plugin {
     });
 
     const summary = summarizeUpload(result);
-    // D-RUN-10: memory is persisted whatever happened.
-    this.settings.uploadMemory = result.nextMemory;
+    // D-RUN-10: memory is persisted whatever happened — the clocks on this
+    // device, everything else in data.json.
+    const { synced, missing } = splitMissing(result.nextMemory);
+    this.settings.uploadMemory = synced;
+    this.#saveMissing(missing);
     this.settings.lastUpload = uploadReport(this.settings.lastUpload, result, summary, new Date().toISOString());
     if (result.stoppedBy === null && result.invalidFolders.length === 0) this.settings.pendingReuploadAll = false;
     else if (opts.reuploadAll) this.settings.pendingReuploadAll = true;
@@ -426,6 +436,27 @@ export default class JavisWikiSyncPlugin extends Plugin {
 
     this.#noticeUpload(result, summary, interactive, previousHeld);
     return summary;
+  }
+
+  /**
+   * This device's `missingSince` clocks. Never throws: storage that is
+   * unavailable reads as "no clocks", which restarts the debounce — a later
+   * delete, never an earlier one.
+   */
+  #loadMissing(): Record<string, number> {
+    try {
+      return sanitizeMissing(this.app.loadLocalStorage(MISSING_SINCE_STORAGE_KEY));
+    } catch {
+      return {};
+    }
+  }
+
+  #saveMissing(missing: Record<string, number>): void {
+    try {
+      this.app.saveLocalStorage(MISSING_SINCE_STORAGE_KEY, Object.keys(missing).length > 0 ? missing : null);
+    } catch {
+      // Lost clocks only delay deletes.
+    }
   }
 
   #noticeUpload(result: UploadResult, summary: string, interactive: boolean, previousHeld: Set<string>): void {

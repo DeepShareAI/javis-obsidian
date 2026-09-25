@@ -8,7 +8,7 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
 
 import { DEFAULT_SETTINGS } from '../src/shell/contracts';
-import { sanitizeSettings } from '../src/shell/settings-load';
+import { joinMissing, sanitizeMissing, sanitizeSettings, splitMissing } from '../src/shell/settings-load';
 import { InsufficientScopeError, isAuthFatal } from '../src/shell/errors';
 
 describe('upload settings defaults', () => {
@@ -76,7 +76,8 @@ describe('sanitizeSettings (review: loadSettings was untested and trusted memory
     });
     expect(s.uploadMemory).toEqual({
       [ID]: { path: 'J/a.md', hash: null, bytes: null, missingSince: null },
-      '00000000-0000-4000-8000-000000000004': { path: 'J/d.md', hash: null, bytes: null, missingSince: 1.5e12 },
+      // Any debounce clock in data.json is dropped: see the next describe.
+      '00000000-0000-4000-8000-000000000004': { path: 'J/d.md', hash: null, bytes: null, missingSince: null },
     });
   });
 
@@ -89,6 +90,41 @@ describe('sanitizeSettings (review: loadSettings was untested and trusted memory
     const s = sanitizeSettings({ uploadOnEdit: 'yes', pendingReuploadAll: 1 });
     expect(s.uploadOnEdit).toBe(false);
     expect(s.pendingReuploadAll).toBe(false);
+  });
+});
+
+describe('missingSince is per device, never in the synced data.json (review, §F.3.3)', () => {
+  const A = '00000000-0000-4000-8000-00000000000a';
+  const B = '00000000-0000-4000-8000-00000000000b';
+
+  it('a missingSince another device wrote into data.json is not trusted: the debounce restarts here', () => {
+    const s = sanitizeSettings({ uploadMemory: { [A]: { path: 'J/a.md', hash: null, bytes: 1, missingSince: 1.5e12 } } });
+    expect(s.uploadMemory[A]!.missingSince).toBeNull();
+  });
+
+  it('split keeps the clocks out of what is synced; join puts only this device\'s back', () => {
+    const { synced, missing } = splitMissing({
+      [A]: { path: 'J/a.md', hash: 'h', bytes: 1, missingSince: 100 },
+      [B]: { path: 'J/b.md', hash: null, bytes: null, missingSince: null },
+    });
+    expect(synced).toEqual({
+      [A]: { path: 'J/a.md', hash: 'h', bytes: 1, missingSince: null },
+      [B]: { path: 'J/b.md', hash: null, bytes: null, missingSince: null },
+    });
+    expect(missing).toEqual({ [A]: 100 });
+    // A clock for an id no longer remembered is dropped on join.
+    expect(joinMissing(synced, { ...missing, '00000000-0000-4000-8000-00000000000c': 5 })).toEqual({
+      [A]: { path: 'J/a.md', hash: 'h', bytes: 1, missingSince: 100 },
+      [B]: { path: 'J/b.md', hash: null, bytes: null, missingSince: null },
+    });
+  });
+
+  it('device-local clocks are sanitized toward "unknown"', () => {
+    expect(sanitizeMissing(null)).toEqual({});
+    expect(sanitizeMissing('x')).toEqual({});
+    expect(sanitizeMissing({ [A.toUpperCase()]: 7, [B]: '8', 'not-a-uuid': 1, '00000000-0000-4000-8000-00000000000c': -1 })).toEqual({
+      [A]: 7,
+    });
   });
 });
 

@@ -76,6 +76,58 @@ export function sanitizeMemory(value: unknown): UploadMemory {
   return out;
 }
 
+// ---------------------------------------------------------------------------
+// The debounce clock is per device (review, §F.3.3)
+// ---------------------------------------------------------------------------
+
+/**
+ * `localStorage` key (via `app.saveLocalStorage`, which is per vault AND per
+ * device) for `{sourceId → missingSince}`.
+ *
+ * §F.3.3 asks for two misses at least five minutes apart, as seen by the
+ * listing that is deciding. `data.json` replicates between devices (Sync,
+ * iCloud, git), so a `missingSince` written by device A — during a
+ * half-finished checkout, say, and never cleared because A was closed — used
+ * to reach device B, whose very first scan could then plan the delete: B's
+ * own vault-open run, with its initial sync still bringing files in, missed
+ * the note once and deleted it. The claim that shared memory could only
+ * restart a debounce was wrong. So the clock never enters `data.json`: the
+ * synced memory carries `missingSince: null`, and each device keeps its own
+ * clocks here. A device that loses them (a cleared profile, a new machine)
+ * restarts the debounce, which only delays a delete.
+ */
+export const MISSING_SINCE_STORAGE_KEY = 'javis-wiki-sync:upload-missing-since';
+
+/** Device-local clocks, repaired toward "unknown": a bad value is dropped. */
+export function sanitizeMissing(value: unknown): Record<string, number> {
+  const out: Record<string, number> = {};
+  if (!isRecord(value)) return out;
+  for (const [key, raw] of Object.entries(value)) {
+    const id = key.toLowerCase();
+    const at = count(raw);
+    if (isUuid(id) && at !== null) out[id] = at;
+  }
+  return out;
+}
+
+/** `nextMemory` → what goes to `data.json` (no clocks) and what stays on this device. */
+export function splitMissing(memory: UploadMemory): { synced: UploadMemory; missing: Record<string, number> } {
+  const synced: UploadMemory = {};
+  const missing: Record<string, number> = {};
+  for (const [id, entry] of Object.entries(memory)) {
+    synced[id] = { ...entry, missingSince: null };
+    if (entry.missingSince !== null) missing[id] = entry.missingSince;
+  }
+  return { synced, missing };
+}
+
+/** The memory `planUpload` sees: the synced entries with THIS device's clocks. */
+export function joinMissing(synced: UploadMemory, missing: Record<string, number>): UploadMemory {
+  const out: UploadMemory = {};
+  for (const [id, entry] of Object.entries(synced)) out[id] = { ...entry, missingSince: missing[id] ?? null };
+  return out;
+}
+
 /**
  * The last run's report, or null. Only its shape is checked — the lists the
  * settings tab and "Review pending changes" iterate — because it is display
@@ -98,7 +150,9 @@ export function sanitizeSettings(stored: unknown): JavisSettings {
   s.uploadFolders = Array.isArray(s.uploadFolders)
     ? s.uploadFolders.filter((f): f is string => typeof f === 'string').map(normalizeFolder)
     : [];
-  s.uploadMemory = sanitizeMemory(s.uploadMemory);
+  // No debounce clock is trusted from data.json: whichever device wrote it,
+  // it did not come from this device's listing (see MISSING_SINCE_STORAGE_KEY).
+  s.uploadMemory = splitMissing(sanitizeMemory(s.uploadMemory)).synced;
   s.uploadOnEdit = s.uploadOnEdit === true;
   s.pendingReuploadAll = s.pendingReuploadAll === true;
   s.lastUpload = lastUpload(s.lastUpload);

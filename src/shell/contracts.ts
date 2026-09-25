@@ -727,7 +727,11 @@ export interface JavisSettings {
   uploadOnEdit: boolean;
   /**
    * `{sourceId → {path, hash, bytes, missingSince}}` (§F.1). A cache: losing
-   * it only delays deletes and re-evaluates shrink checks.
+   * it only delays deletes and re-evaluates shrink checks. `missingSince` is
+   * always null here: the debounce clock is per device and lives in
+   * `localStorage` (settings-load.ts `MISSING_SINCE_STORAGE_KEY`, review),
+   * because this file syncs and another device's clock must not shorten this
+   * device's two-scan wait.
    */
   uploadMemory: UploadMemory;
   /** The last upload run, for the settings tab and the review command. */

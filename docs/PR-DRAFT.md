@@ -144,10 +144,14 @@ calls rather than spec text:
   iCloud dataless files makes a run slow (10 s per file) though never unsafe.
 - `JavisWikiApiClient` still captures `baseUrl` at construction (D-API-2,
   pre-existing, out of scope); the new sources client reads it live.
-- `uploadMemory` (with `missingSince`) lives in `data.json`, which replicates
-  between devices. Two devices can overwrite each other's copy; the worst case
-  is a restarted debounce, i.e. a later delete, never an earlier one. Holds are
-  re-derived by each device on every run.
+- `uploadMemory` lives in `data.json`, which replicates between devices, but
+  its `missingSince` clocks do not (review fix): the old claim that a shared
+  clock could only delay a delete was false — device B could delete on its
+  first scan using a clock device A wrote. Each device now keeps its own
+  clocks in `app.saveLocalStorage` (per vault, per device), and `data.json`
+  always carries `missingSince: null`, so every device needs its own two
+  misses. Losing the local clocks restarts the debounce. Holds are re-derived
+  by each device on every run.
 
 ## Tests
 
