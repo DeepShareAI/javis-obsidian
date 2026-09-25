@@ -27,6 +27,10 @@ import {
   decodeJwtClaims,
   scopesFromJwt,
   wikiResource,
+  audiencesFromJwt,
+  connectOptionsFor,
+  isLegacyAudience,
+  lacksWriteGrant,
   parseCallbackQuery,
   portOf,
   randomToken,
@@ -979,7 +983,7 @@ describe('step-up: connect and refresh', () => {
     expect(h.auth.grantedScopes()).toEqual(['mcp:read', 'wiki:write']);
   });
 
-  it('a plain connect sends no resource anywhere and scope=mcp:read', async () => {
+  it('JavisOAuth.connect() with no options still sends no resource (the primitive; the plugin never calls it bare)', async () => {
     const h = harness((_req, n) =>
       n === 1 ? { status: 201, text: JSON.stringify({ client_id: 'cid-1' }) } : tokenBody(liveJwt, 'r1'),
     );
@@ -1024,5 +1028,72 @@ describe('grantedScopes', () => {
     expect(decodeJwtClaims('a.b.c')).toBeNull();
     expect(decodeJwtClaims(jwt({ x: 1 }))).toEqual({ x: 1 });
     expect(scopesFromJwt(jwt({ scope: '  mcp:read  ' }))).toEqual(['mcp:read']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Review of 0.2.0: the /wiki resource on every connect, and the audience check
+// ---------------------------------------------------------------------------
+
+describe('connectOptionsFor (§C.3 resource always, §C.7 scope only with uploads)', () => {
+  it('a read-only connect asks for the /wiki resource and the default scope', () => {
+    expect(connectOptionsFor('https://mcp.javis.is/', false)).toEqual({ resource: 'https://mcp.javis.is/wiki' });
+  });
+
+  it('with an upload folder it adds the union scope', () => {
+    expect(connectOptionsFor('https://mcp.javis.is', true)).toEqual({
+      resource: 'https://mcp.javis.is/wiki',
+      scope: 'mcp:read wiki:write',
+    });
+  });
+
+  it('a read-only connect sends resource on authorize AND on the code exchange, scope=mcp:read', async () => {
+    const readJwt = jwt({ sub: 'u', exp: Math.floor(NOW / 1000) + 3600, scope: 'mcp:read', aud: 'https://mcp.javis.is/wiki' });
+    const h = harness((_req, n) =>
+      n === 1 ? { status: 201, text: JSON.stringify({ client_id: 'cid-1' }) } : tokenBody(readJwt, 'r1'),
+    );
+    await h.auth.connect(connectOptionsFor('https://mcp.javis.is', false));
+    const url = new URL(h.openBrowser.mock.calls[0]![0] as string);
+    expect(url.searchParams.get('scope')).toBe('mcp:read');
+    expect(url.searchParams.get('resource')).toBe('https://mcp.javis.is/wiki');
+    const form = new URLSearchParams(h.calls[1]!.body!);
+    expect(form.get('resource')).toBe('https://mcp.javis.is/wiki');
+    expect(h.auth.grantedAudiences()).toEqual(['https://mcp.javis.is/wiki']);
+  });
+});
+
+describe('audience', () => {
+  it('audiencesFromJwt reads a string or an array, else null', () => {
+    expect(audiencesFromJwt(jwt({ aud: 'https://mcp.javis.is/mcp' }))).toEqual(['https://mcp.javis.is/mcp']);
+    expect(audiencesFromJwt(jwt({ aud: ['a', 'b'] }))).toEqual(['a', 'b']);
+    expect(audiencesFromJwt(jwt({ aud: 3 }))).toBeNull();
+    expect(audiencesFromJwt(jwt({}))).toBeNull();
+    expect(audiencesFromJwt('opaque')).toBeNull();
+  });
+
+  it('isLegacyAudience: /mcp is legacy, /wiki (with or without a trailing slash) is not, unknown is not', () => {
+    const base = 'https://mcp.javis.is';
+    expect(isLegacyAudience(['https://mcp.javis.is/mcp'], base)).toBe(true);
+    expect(isLegacyAudience(['https://mcp.javis.is/wiki'], base)).toBe(false);
+    expect(isLegacyAudience(['https://mcp.javis.is/wiki/'], `${base}/`)).toBe(false);
+    expect(isLegacyAudience(null, base)).toBe(false);
+  });
+
+  it('lacksWriteGrant: missing scope, or a legacy audience, or neither', () => {
+    const base = 'https://mcp.javis.is';
+    const wiki = ['https://mcp.javis.is/wiki'];
+    expect(lacksWriteGrant(['mcp:read'], wiki, base)).toBe(true);
+    expect(lacksWriteGrant(['mcp:read', 'wiki:write'], ['https://mcp.javis.is/mcp'], base)).toBe(true);
+    expect(lacksWriteGrant(['mcp:read', 'wiki:write'], wiki, base)).toBe(false);
+    // Undecodable: try it, and let the server decide (D-RUN-3).
+    expect(lacksWriteGrant(null, null, base)).toBe(false);
+  });
+
+  it('grantedAudiences decodes the stored token, null without one', () => {
+    const h = harness(() => ({ status: 500, text: '' }), {
+      secrets: { [SECRET_ACCESS_TOKEN]: jwt({ aud: 'https://mcp.javis.is/mcp' }), [SECRET_REFRESH_TOKEN]: 'r' },
+    });
+    expect(h.auth.grantedAudiences()).toEqual(['https://mcp.javis.is/mcp']);
+    expect(harness(() => ({ status: 500, text: '' })).auth.grantedAudiences()).toBeNull();
   });
 });

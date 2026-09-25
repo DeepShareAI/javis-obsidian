@@ -177,6 +177,13 @@ export interface JavisAuth {
   grantedScopes(): string[] | null;
 
   /**
+   * The stored access token's `aud` claim as a list; null when there is no
+   * token or it does not decode. Tells a pre-0.2.0 `/mcp`-audience grant from
+   * a `/wiki` one (§C.3), which only a new authorization can change.
+   */
+  grantedAudiences(): string[] | null;
+
+  /**
    * A valid bearer, refreshing first if the access token is expired or within
    * the skew window. Never returns an empty string.
    *

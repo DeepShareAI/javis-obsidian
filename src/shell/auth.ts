@@ -215,8 +215,10 @@ export interface AuthorizeUrlParams {
   state: string;
   scope?: string;
   /**
-   * RFC 8707 resource indicator. Omitted entirely when absent, so a read-only
-   * connect produces a URL byte-identical to 0.1.x's (plan D-AUTH-1).
+   * RFC 8707 resource indicator. Omitted entirely when absent, which yields
+   * 0.1.x's URL byte for byte. The plugin itself always passes one since
+   * review of 0.2.0 (`connectOptionsFor`); the omission is kept for callers
+   * that ask for nothing.
    */
   resource?: string;
 }
@@ -360,6 +362,81 @@ export function scopesFromJwt(token: string): string[] | null {
  */
 export function wikiResource(baseUrl: string): string {
   return `${normalizeBaseUrl(baseUrl)}/wiki`;
+}
+
+/**
+ * The `aud` claim as a list (RFC 7519 §4.1.3 allows a string or an array);
+ * null when absent or undecodable. Read for the same reason `scopesFromJwt`
+ * is: to decide what to ask for, never to trust — the server checks it.
+ */
+export function audiencesFromJwt(token: string): string[] | null {
+  const aud = decodeJwtClaims(token)?.['aud'];
+  if (typeof aud === 'string') return [aud];
+  if (Array.isArray(aud) && aud.every((a): a is string => typeof a === 'string')) return aud;
+  return null;
+}
+
+/** The server's comparison form (javis_mcp/resources.py `canonical`): one trailing `/` dropped. */
+function canonicalResource(resource: string): string {
+  return normalizeBaseUrl(resource);
+}
+
+/**
+ * True when the token's audience is decodable and is NOT this origin's `/wiki`
+ * resource: a grant minted before 0.2.0 (or by a 0.2.0 build that still sent
+ * no `resource`), whose `aud` is the MCP resource. The server accepts that
+ * audience on `/wiki/export` for one release only (§C.3), and never on the
+ * upload routes, and a refresh can confirm a grant's audience but never switch
+ * it (javis_mcp/oauth/token.py `_resource_param_matches`) — so only a new
+ * authorization moves such a device. Undecodable → false: try it, and let the
+ * server decide.
+ */
+export function isLegacyAudience(audiences: readonly string[] | null, baseUrl: string): boolean {
+  if (audiences === null) return false;
+  const wiki = canonicalResource(wikiResource(baseUrl));
+  return !audiences.some((aud) => canonicalResource(aud) === wiki);
+}
+
+/**
+ * True when the stored token visibly cannot write (plan D-RUN-3, widened): its
+ * decodable `scope` lacks `wiki:write`, or its decodable `aud` is not the
+ * `/wiki` resource. The second half matters because the upload routes accept
+ * the `/wiki` audience only: a legacy-audience token fails authentication
+ * there with a 401, not the 403 `insufficient_scope` the step-up listens
+ * for, so without this check such a token reads as "expired even after a
+ * refresh" and the step-up is never reached.
+ */
+export function lacksWriteGrant(
+  scopes: readonly string[] | null,
+  audiences: readonly string[] | null,
+  baseUrl: string,
+): boolean {
+  if (scopes !== null && !scopes.includes(WIKI_WRITE_SCOPE)) return true;
+  return isLegacyAudience(audiences, baseUrl);
+}
+
+/**
+ * What `connect` should ask for (§C.3, §C.7).
+ *
+ * The `/wiki` resource ALWAYS: §C.3 says the plugin requests it, and the old
+ * `/mcp` audience is accepted on `/wiki/export` for one release only, after
+ * which a read-only device still holding an `/mcp` grant would stop syncing
+ * with no code path in the plugin to move it (a refresh keeps the audience).
+ * `mcp:read` alone is valid on the `/wiki` resource, and a server from before
+ * the resource split ignores the parameter (§C.3 "it ignores it today"), so
+ * sending it costs nothing. This departs from the plan's D-AUTH-1, which kept
+ * read-only connects byte-identical to 0.1.x and deferred the resource to
+ * 0.3.0; review found that leaves every read-only 0.2.0 install on the
+ * audience the server has scheduled for removal.
+ *
+ * The union scope only once an upload folder is selected (§C.7): a user who
+ * never uploads never sees a consent screen asking to store their notes.
+ */
+export function connectOptionsFor(baseUrl: string, uploads: boolean): ConnectOptions {
+  return {
+    resource: wikiResource(baseUrl),
+    ...(uploads ? { scope: OAUTH_SCOPE_WRITE } : {}),
+  };
 }
 
 /** Expired, or close enough to expiry that a request would race the clock. */
@@ -635,6 +712,12 @@ export class JavisOAuth implements JavisAuth {
   grantedScopes(): string[] | null {
     const access = this.readSecret(SECRET_ACCESS_TOKEN);
     return access ? scopesFromJwt(access) : null;
+  }
+
+  /** The stored access token's `aud`, as `grantedScopes` reads `scope`; null when unknown. */
+  grantedAudiences(): string[] | null {
+    const access = this.readSecret(SECRET_ACCESS_TOKEN);
+    return access ? audiencesFromJwt(access) : null;
   }
 
   async connect(options: ConnectOptions = {}): Promise<void> {

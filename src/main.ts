@@ -34,7 +34,7 @@ import { Notice, Plugin, TFile } from 'obsidian';
 
 import { isUnderFolder, normalizeFolder } from './core/folders';
 import { JavisWikiApiClient, obsidianTransport } from './shell/api';
-import { JavisOAuth, OAUTH_SCOPE_WRITE, WIKI_WRITE_SCOPE, wikiResource } from './shell/auth';
+import { JavisOAuth, WIKI_WRITE_SCOPE, connectOptionsFor, isLegacyAudience, lacksWriteGrant } from './shell/auth';
 import type {
   ConnectOptions,
   JavisSettings,
@@ -481,20 +481,39 @@ export default class JavisWikiSyncPlugin extends Plugin {
   // -- the upload's OAuth and review surface --------------------------------
 
   /**
-   * What `connect` should ask for (§C.7, plan D-AUTH-1): the read scope alone
-   * while no upload folder is selected, the union scope and the `/wiki`
-   * resource once one is.
+   * What `connect` should ask for (§C.3, §C.7): the `/wiki` resource always,
+   * and the union scope once an upload folder is selected. See
+   * `connectOptionsFor` for why the resource is no longer conditional.
    */
   uploadConnectOptions(): ConnectOptions {
-    if (this.settings.uploadFolders.length === 0) return {};
-    return { scope: OAUTH_SCOPE_WRITE, resource: wikiResource(this.settings.baseUrl) };
+    return connectOptionsFor(this.settings.baseUrl, this.settings.uploadFolders.length > 0);
+  }
+
+  /**
+   * True when this device's token visibly cannot write (D-AUTH-3): its scope
+   * lacks `wiki:write`, or its audience is the pre-0.2.0 `/mcp` resource the
+   * upload routes refuse. Only asked while uploads are on.
+   */
+  #lacksWriteGrant(): boolean {
+    return lacksWriteGrant(this.auth.grantedScopes(), this.auth.grantedAudiences(), this.settings.baseUrl);
   }
 
   /** True when a folder is selected but this device's token cannot write (D-AUTH-3). */
   needsUploadReconnect(): boolean {
     if (this.settings.uploadFolders.length === 0 || !this.auth.isConnected()) return false;
-    const scopes = this.auth.grantedScopes();
-    return scopes !== null && !scopes.includes(WIKI_WRITE_SCOPE);
+    return this.#lacksWriteGrant();
+  }
+
+  /**
+   * True when a read-only device still holds a pre-0.2.0 `/mcp`-audience
+   * grant. The download keeps working for now — `/wiki/export` accepts that
+   * audience for one release (§C.3) — but a refresh can never move it to
+   * `/wiki`, so the settings tab asks for one reconnect before the window
+   * closes. Not a Notice: nothing is broken yet.
+   */
+  needsAudienceReconnect(): boolean {
+    if (!this.auth.isConnected()) return false;
+    return isLegacyAudience(this.auth.grantedAudiences(), this.settings.baseUrl);
   }
 
   /** The "Review pending changes" command. */

@@ -110,6 +110,17 @@ export class JavisSettingTab extends PluginSettingTab {
       text: STATUS_TEXT[status],
       cls: 'setting-item-description',
     });
+    // §C.3: a grant from before 0.2.0 names the old audience, which the server
+    // accepts for one more release. Only a new sign-in moves it; the Upload
+    // section has its own, stronger prompt when uploads are on.
+    if (status === 'connected' && this.plugin.needsAudienceReconnect() && !this.plugin.needsUploadReconnect()) {
+      containerEl.createEl('p', {
+        text:
+          'This device signed in with an older version of the plugin. Disconnect and connect ' +
+          'again once, so syncing keeps working after the next Javis server update.',
+        cls: 'setting-item-description',
+      });
+    }
 
     new Setting(containerEl)
       .setName('Javis server')
@@ -164,8 +175,8 @@ export class JavisSettingTab extends PluginSettingTab {
           .onClick(async () => {
             button.setDisabled(true).setButtonText('Waiting for your browser…');
             try {
-              // With an upload folder selected, ask for the write scope up
-              // front (§C.7); otherwise exactly what 0.1.x asked for.
+              // The /wiki resource always (§C.3); with an upload folder
+              // selected, the write scope up front too (§C.7).
               await this.plugin.auth.connect(this.plugin.uploadConnectOptions());
               await this.plugin.saveSettings();
               new Notice('Javis: connected.');
@@ -352,7 +363,7 @@ export class JavisSettingTab extends PluginSettingTab {
     if (this.plugin.needsUploadReconnect()) {
       new Setting(containerEl)
         .setName('Allow uploads')
-        .setDesc('This device is connected read-only. Reconnect once to let Javis store notes you upload.')
+        .setDesc("This device's sign-in does not allow uploads. Reconnect once to let Javis store notes you upload.")
         .addButton((button) =>
           button
             .setButtonText('Reconnect to allow uploads')
