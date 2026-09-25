@@ -38,7 +38,6 @@ import { JavisOAuth, connectOptionsFor, isLegacyAudience, lacksWriteGrant } from
 import type {
   ConnectOptions,
   JavisSettings,
-  LastUploadReport,
   SyncResult,
   SyncTrigger,
   UploadResult,
@@ -56,6 +55,7 @@ import {
   runDownloadThenUpload,
   summarizeUpload,
   uploadOnce,
+  uploadReport,
 } from './shell/upload';
 import { ObsidianSecretStore, ObsidianVaultAdapter } from './shell/vault';
 
@@ -73,9 +73,6 @@ const MINUTE_MS = 60_000;
 
 /** Triggers a person just initiated: they get Notices, and may open the browser for a step-up. */
 const INTERACTIVE: ReadonlySet<SyncTrigger> = new Set<SyncTrigger>(['command', 'settings', 'review']);
-
-/** How many entries of each list `lastUpload` keeps in data.json (the tab shows 10). */
-const REPORT_LIST_CAP = 100;
 
 /** Options for one run. All optional; `syncNow(trigger)` alone is the 0.1.x run plus the upload. */
 export interface SyncOptions {
@@ -437,7 +434,7 @@ export default class JavisWikiSyncPlugin extends Plugin {
     const summary = summarizeUpload(result);
     // D-RUN-10: memory is persisted whatever happened.
     this.settings.uploadMemory = result.nextMemory;
-    this.settings.lastUpload = toReport(result, summary);
+    this.settings.lastUpload = uploadReport(this.settings.lastUpload, result, summary, new Date().toISOString());
     if (result.stoppedBy === null && result.invalidFolders.length === 0) this.settings.pendingReuploadAll = false;
     else if (opts.reuploadAll) this.settings.pendingReuploadAll = true;
     await this.saveSettings();
@@ -575,18 +572,4 @@ export default class JavisWikiSyncPlugin extends Plugin {
   #setStatus(text: string): void {
     this.#statusBar?.setText(text);
   }
-}
-
-/** The persisted, capped copy of a run (D-UI-2 shows 10 of each; `held` is kept whole for the review). */
-function toReport(result: UploadResult, summary: string): LastUploadReport {
-  const { nextMemory: _memory, ...rest } = result;
-  return {
-    ...rest,
-    failures: rest.failures.slice(0, REPORT_LIST_CAP),
-    skipped: rest.skipped.slice(0, REPORT_LIST_CAP),
-    waiting: rest.waiting.slice(0, REPORT_LIST_CAP),
-    undoReports: rest.undoReports.slice(0, REPORT_LIST_CAP),
-    at: new Date().toISOString(),
-    summary,
-  };
 }

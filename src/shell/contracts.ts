@@ -641,6 +641,14 @@ export interface UploadResult {
   stoppedBy: { code: string; message: string; needsUserAction: boolean } | null;
   /** False when the half did nothing because no folder is selected. */
   ran: boolean;
+  /**
+   * True once `planUpload` ran. False when the run stopped before it (no
+   * write grant, a failed listing, a failed enumeration, an invalid
+   * selection): then `held`, `skipped` and `waiting` are empty because
+   * nothing was decided, not because nothing is pending, and the persisted
+   * report keeps the previous run's lists (`uploadReport`).
+   */
+  planned: boolean;
 }
 
 /** `UploadResult` minus the memory, as persisted for the settings tab. */

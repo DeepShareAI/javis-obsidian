@@ -26,7 +26,7 @@ import {
   ProtocolError,
   RateLimitedError,
 } from '../src/shell/errors';
-import { describeNote, lenientSourceId, summarizeUpload, uploadOnce } from '../src/shell/upload';
+import { describeNote, lenientSourceId, summarizeUpload, uploadOnce, uploadReport } from '../src/shell/upload';
 
 const T0 = 1_800_000_000_000;
 
@@ -570,6 +570,7 @@ describe('summarizeUpload', () => {
     nextMemory: {},
     stoppedBy: null,
     ran: true,
+    planned: true,
   };
 
   it('lists the non-zero parts', () => {
@@ -588,5 +589,46 @@ describe('summarizeUpload', () => {
     expect(
       summarizeUpload({ ...base, stoppedBy: { code: 'network', message: 'offline', needsUserAction: false } }),
     ).toBe('nothing to upload; stopped: offline');
+  });
+});
+
+describe('uploadReport: a run that never planned keeps the last lists (review)', () => {
+  const heldDelete = { key: `delete:${id(1)}`, action: { kind: 'delete' as const, sourceId: id(1), path: 'J/a.md' }, reason: 'mass-change' as const };
+
+  it('a GET failure keeps the held, skipped and waiting lists, and updates the rest', async () => {
+    const { api, deps } = setup({ 'Journal/a.md': stamped(1) });
+    api.listError = new NetworkError('offline');
+    const result = await uploadOnce(deps());
+    expect(result.planned).toBe(false);
+    const previous = uploadReport(
+      null,
+      { ...result, planned: true, stoppedBy: null, held: [heldDelete], skipped: [{ path: 'J/b.md', reason: 'oversize' }], waiting: [{ sourceId: id(2), path: 'J/c.md', eligibleAt: T0 }] },
+      'earlier',
+      '2026-09-24T00:00:00.000Z',
+    );
+    const next = uploadReport(previous, result, 'stopped', '2026-09-24T01:00:00.000Z');
+    expect(next.held).toEqual([heldDelete]);
+    expect(next.skipped).toEqual(previous.skipped);
+    expect(next.waiting).toEqual(previous.waiting);
+    expect(next.summary).toBe('stopped');
+    expect(next.at).toBe('2026-09-24T01:00:00.000Z');
+    expect(next.stoppedBy?.code).toBe('network');
+  });
+
+  it('a run that planned replaces the lists, even with empty ones', async () => {
+    const { deps } = setup({ 'Journal/a.md': stamped(1) });
+    const result = await uploadOnce(deps());
+    expect(result.planned).toBe(true);
+    const previous = uploadReport(null, { ...result, held: [heldDelete] }, 'earlier', 'x');
+    expect(uploadReport(previous, result, 'now', 'y').held).toEqual([]);
+  });
+
+  it('caps the lists and never persists memory', async () => {
+    const { deps } = setup({ 'Journal/a.md': stamped(1) });
+    const result = await uploadOnce(deps());
+    const skipped = Array.from({ length: 150 }, (_, i) => ({ path: `J/${i}.md`, reason: 'oversize' as const }));
+    const report = uploadReport(null, { ...result, skipped }, 's', 'x');
+    expect(report.skipped).toHaveLength(100);
+    expect('nextMemory' in report).toBe(false);
   });
 });

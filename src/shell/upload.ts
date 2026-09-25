@@ -51,7 +51,14 @@ import {
 import { restampText, stampText } from '../core/stamp';
 import { planUpload } from '../core/upload';
 import type { LocalNote, UploadAction } from '../core/upload';
-import type { SourcesListing, UploadDeps, UploadMemory, UploadResult, UploadVault } from './contracts';
+import type {
+  LastUploadReport,
+  SourcesListing,
+  UploadDeps,
+  UploadMemory,
+  UploadResult,
+  UploadVault,
+} from './contracts';
 import { InsufficientScopeError, RateLimitedError, SyncCancelledError, isJavisError } from './errors';
 
 // ---------------------------------------------------------------------------
@@ -215,6 +222,7 @@ export async function uploadOnce(deps: UploadDeps): Promise<UploadResult> {
     nextMemory: cloneMemory(deps.memory),
     stoppedBy: null,
     ran: false,
+    planned: false,
   };
 
   // Rule 6. "Never opted in" is no folder AND no remembered upload: with
@@ -292,6 +300,7 @@ export async function uploadOnce(deps: UploadDeps): Promise<UploadResult> {
       reuploadAll: deps.reuploadAll,
       release: deps.release,
     });
+    result.planned = true;
     result.nextMemory = plan.nextMemory;
     result.held = plan.held;
     result.waiting = plan.waiting;
@@ -518,6 +527,45 @@ export function summarizeUpload(result: UploadResult): string {
   let line = parts.length > 0 ? parts.join(', ') : 'nothing to upload';
   if (result.stoppedBy && result.stoppedBy.code !== 'cancelled') line += `; stopped: ${result.stoppedBy.message}`;
   return line;
+}
+
+/** How many entries of each list the persisted report keeps (the tab shows 10). */
+export const REPORT_LIST_CAP = 100;
+
+/**
+ * The persisted, capped copy of a run for `data.json` (D-UI-2 shows 10 of
+ * each; `held` is kept whole for the review). Memory is never part of it.
+ *
+ * A run that stopped before planning — a network error on the listing, a
+ * missing write grant — decided nothing, so its empty `held`, `skipped` and
+ * `waiting` say nothing about what is pending. Keeping the previous run's
+ * lists then is what lets "Review pending changes" still show the 12 deletes
+ * held an hour ago, and keeps the next run's held-Notice de-duplication from
+ * treating them as new (review). The summary, time, stop reason and counters
+ * are this run's.
+ */
+export function uploadReport(
+  previous: LastUploadReport | null,
+  result: UploadResult,
+  summary: string,
+  at: string,
+): LastUploadReport {
+  const { nextMemory: _memory, ...rest } = result;
+  const keep = !result.planned && previous !== null;
+  return {
+    ...rest,
+    held: keep ? previous.held : rest.held,
+    skipped: (keep ? previous.skipped : rest.skipped).slice(0, REPORT_LIST_CAP),
+    waiting: (keep ? previous.waiting : rest.waiting).slice(0, REPORT_LIST_CAP),
+    failures: rest.failures.slice(0, REPORT_LIST_CAP),
+    undoReports: (keep && rest.undoReports.length === 0 ? previous.undoReports : rest.undoReports).slice(
+      0,
+      REPORT_LIST_CAP,
+    ),
+    counts: keep && Object.keys(rest.counts).length === 0 ? previous.counts : rest.counts,
+    at,
+    summary,
+  };
 }
 
 // ---------------------------------------------------------------------------
