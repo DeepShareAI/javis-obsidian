@@ -268,7 +268,7 @@ describe('planUpload: defensive filters', () => {
 
   it('an ignored note does not count as present', () => {
     const r = row(id(1), 'Journal/a.md');
-    const plan = planUpload([note('Elsewhere/a.md', id(1))], [r], {}, settings());
+    const plan = planUpload([note('Elsewhere/a.md', id(1))], [r], { [id(1)]: mem('Journal/a.md') }, settings());
     expect(plan.waiting).toMatchObject([{ sourceId: id(1) }]);
   });
 
@@ -285,7 +285,8 @@ describe('planUpload: defensive filters', () => {
     const inbox = synced(1, 'Inbox');
     const journal = synced(2, 'Journal');
     // The user removed Inbox; its note is still in the vault but no longer listed.
-    const run1 = planUpload([journal.note], [inbox.row, journal.row], {}, settings({ folders: ['Journal'] }));
+    const uploaded = { [id(1)]: mem(inbox.row.vault_path), [id(2)]: mem(journal.row.vault_path) };
+    const run1 = planUpload([journal.note], [inbox.row, journal.row], uploaded, settings({ folders: ['Journal'] }));
     expect(run1.actions).toEqual([]);
     expect(run1.waiting).toMatchObject([{ sourceId: id(1) }]);
     const run2 = planUpload(
@@ -299,7 +300,7 @@ describe('planUpload: defensive filters', () => {
 
   it('deselecting the LAST folder removes its notes too, behind the same debounce and cap (D-PLAN-13)', () => {
     const r = row(id(1), 'Journal/a.md');
-    const run1 = planUpload([], [r], {}, settings({ folders: [] }));
+    const run1 = planUpload([], [r], { [id(1)]: mem('Journal/a.md') }, settings({ folders: [] }));
     expect(run1.actions).toEqual([]);
     expect(run1.waiting).toMatchObject([{ sourceId: id(1) }]);
     const run2 = planUpload([], [r], run1.nextMemory, settings({ folders: [], now: T0 + DEBOUNCE_MS }));
@@ -343,8 +344,10 @@ describe('planUpload: the two-scan debounce (§F.3.3)', () => {
   const r = row(id(1), 'Outside/a.md');
   const keep = synced(2);
 
+  const uploaded = { [id(1)]: mem('Outside/a.md') };
+
   it('a move out of the selection deletes only after two misses 5+ minutes apart', () => {
-    const run1 = planUpload([keep.note], [r, keep.row], {}, settings({ now: T0 }));
+    const run1 = planUpload([keep.note], [r, keep.row], uploaded, settings({ now: T0 }));
     expect(kinds(run1)).toEqual([]);
     expect(run1.waiting).toEqual([{ sourceId: id(1), path: 'Outside/a.md', eligibleAt: T0 + DEBOUNCE_MS }]);
     expect(run1.nextMemory[id(1)]!.missingSince).toBe(T0);
@@ -359,11 +362,23 @@ describe('planUpload: the two-scan debounce (§F.3.3)', () => {
     expect(run3.waiting).toEqual([]);
   });
 
-  it('one miss holds nothing back but deletes nothing, even with memory lost', () => {
-    const plan = planUpload([keep.note], [r, keep.row], {}, settings());
+  it('one miss holds nothing back but deletes nothing', () => {
+    const plan = planUpload([keep.note], [r, keep.row], uploaded, settings());
     expect(plan.actions).toEqual([]);
     expect(plan.held).toEqual([]);
-    expect(plan.nextMemory[id(1)]).toEqual({ path: 'Outside/a.md', hash: r.body_hash, bytes: null, missingSince: T0 });
+    expect(plan.nextMemory[id(1)]).toEqual({ ...mem('Outside/a.md'), missingSince: T0 });
+  });
+
+  it('with memory lost, a row whose note is still here is re-learned; a row with no note here is left alone', () => {
+    const plan = planUpload([keep.note], [r, keep.row], {}, settings());
+    expect(plan.actions).toEqual([]);
+    expect(plan.waiting).toEqual([]);
+    expect(plan.nextMemory).toEqual({
+      [id(2)]: { path: keep.note.path, hash: keep.row.body_hash, bytes: keep.note.bytes, missingSince: null },
+    });
+    // Re-learned: once its note goes, it is an ordinary delete again.
+    const gone = planUpload([], [r, keep.row], plan.nextMemory, settings({ folders: ['Journal', 'Inbox'] }));
+    expect(gone.nextMemory[id(2)]!.missingSince).toBe(T0);
   });
 
   it('a row that reappears resets missingSince', () => {
@@ -421,7 +436,7 @@ describe('planUpload: unreadable is unknown (§F.3.2)', () => {
     const plan = planUpload(
       [note('Journal/b.md', null, { readable: false, hash: null })],
       [gone, other],
-      missingLongAgo([gone]),
+      { ...missingLongAgo([gone]), [id(2)]: mem('Journal/b.md') },
       settings(),
     );
     expect(plan.actions).toEqual([{ kind: 'delete', sourceId: id(1), path: 'Journal/a.md' }]);
@@ -624,6 +639,55 @@ describe('planUpload: an id-less note at a tracked path is that source (D-PLAN-4
     expect(planUpload([note('Journal/a.md', null)], [dead], {}, settings()).actions).toEqual([
       { kind: 'stamp', path: 'Journal/a.md' },
     ]);
+  });
+});
+
+describe('planUpload: rows another vault uploaded (review)', () => {
+  // Work vault (Work/) and personal vault (Journal/) on one Javis account.
+  const personal = syncedMany(3, 'Journal', 10);
+  const work = syncedMany(2, 'Work', 1);
+  const workSettings = settings({ folders: ['Work'] });
+  const workMemory: UploadMemory = { [id(1)]: mem('Work/n1.md'), [id(2)]: mem('Work/n2.md') };
+
+  it('never waits on, deletes, or counts a row this vault did not upload', () => {
+    const run1 = planUpload(work.notes, [...work.rows, ...personal.rows], workMemory, workSettings);
+    expect(run1.actions).toEqual([]);
+    expect(run1.waiting).toEqual([]);
+    expect(Object.keys(run1.nextMemory).sort()).toEqual([id(1), id(2)]);
+    const later = planUpload(work.notes, [...work.rows, ...personal.rows], run1.nextMemory, { ...workSettings, now: T0 + 60 * DEBOUNCE_MS });
+    expect(later.actions).toEqual([]);
+    expect(later.held).toEqual([]);
+    expect(later.threshold).toBe(5);
+  });
+
+  it('this vault still deletes its own rows beside foreign ones', () => {
+    const plan = planUpload(
+      [work.notes[1]!],
+      [...work.rows, ...personal.rows],
+      { ...workMemory, [id(1)]: mem('Work/n1.md', { missingSince: T0 - DEBOUNCE_MS }) },
+      workSettings,
+    );
+    expect(plan.actions).toEqual([{ kind: 'delete', sourceId: id(1), path: 'Work/n1.md' }]);
+  });
+
+  it('with nothing selected, only remembered rows are removed', () => {
+    const plan = planUpload([], [...work.rows, ...personal.rows], { [id(1)]: mem('Work/n1.md') }, settings({ folders: [] }));
+    expect(plan.waiting.map((w) => w.sourceId)).toEqual([id(1)]);
+  });
+
+  it('never adopts a foreign row at the same path, and a foreign row explains no unknown note', () => {
+    const foreign = row(id(50), 'Work/shared.md');
+    const plan = planUpload([note('Work/shared.md', null, { hash: foreign.body_hash })], [foreign], {}, workSettings);
+    expect(plan.actions).toEqual([{ kind: 'stamp', path: 'Work/shared.md' }]);
+
+    const mine = row(id(1), 'Work/n1.md');
+    const held = planUpload(
+      [note('Work/shared.md', null, { readable: false, hash: null })],
+      [foreign, mine],
+      { [id(1)]: mem('Work/n1.md', { missingSince: T0 - DEBOUNCE_MS }) },
+      workSettings,
+    );
+    expect(held.held).toMatchObject([{ key: `delete:${id(1)}`, reason: 'unreadable-ambiguous' }]);
   });
 });
 

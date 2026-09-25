@@ -70,6 +70,14 @@ calls rather than spec text:
   held (`suspicious-edit`) and counts toward the mass-change threshold
   (§F.3.5 "its `put` is held with the deletes"; §H). It used to be held only
   when the cap tripped, which let one truncated note through on its own.
+- **D-PLAN-18 (review): only this vault's rows.** The listing is per
+  account, so a second vault on the same account used to have its rows
+  deleted as "missing" in a loop. A row is now this vault's only when upload
+  memory has it (a PUT from here, or a readable note here carrying its id);
+  no other row is deleted, adopted, or counted toward the cap. Cost: a row
+  whose note vanished while `data.json` was lost stays on the server.
+  **For PR 3 / a later spec:** a per-vault id on PUT and a filtered GET would
+  remove this heuristic.
 - **D-PLAN-9** A blank note with no id is not stamped or uploaded.
 - **D-PLAN-11** An invalid folder selection plans nothing at all.
 - **D-PLAN-13** Deselecting a folder removes its notes after the debounce and

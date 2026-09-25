@@ -53,6 +53,10 @@
  *    and before review it silently did not hold for the last folder: its
  *    notes' full text stayed on the server for good. The vanished-folder hold
  *    does not apply: it guards selected folders, not deselected ones.
+ * 9. **Only this vault's rows** (review). The listing is per account, not
+ *    per vault. A row is this vault's when upload memory has it (uploaded
+ *    here, or carried by a readable note here); any other row is never
+ *    deleted, adopted, or counted. See "whose rows" below.
  */
 
 import { isUnderFolder, validateFolders } from './folders';
@@ -326,7 +330,41 @@ export function planUpload(
   const rows = new Map<string, ServerSource>();
   for (const row of server) rows.set(row.source_id.toLowerCase(), row);
   const liveRows = server.filter((r) => !r.deleted);
-  const threshold = massChangeThreshold(liveRows.length);
+
+  // -- whose rows ------------------------------------------------------------
+  // Rule 9. `GET /wiki/sources/obsidian` returns every obsidian source on the
+  // ACCOUNT, and neither §B.1 nor §E scopes a row to a vault. A second vault
+  // on the same account (work and personal, say) uploads rows that no note
+  // here carries, and before review every one of them was "missing": past
+  // the debounce they were deleted, the other vault restamped and re-sent
+  // its notes as new sources, and this vault deleted those too — an LLM
+  // distill and an undo per note per interval, for ever.
+  //
+  // Until the server scopes rows to a vault (a spec change), a row is THIS
+  // vault's only when upload memory has an entry for it: this vault
+  // uploaded it, or a readable note here carries its id (claimed below, so
+  // a lost `data.json` re-learns every source whose note is still here on
+  // the first run). Only such a row can become a delete, be adopted, or
+  // explain an unknown note, and only such rows size the mass-change cap.
+  // Any other row is left alone. The cost is on the safe side: a row whose
+  // note went missing while memory was lost is no longer recognizably ours,
+  // and stays on the server rather than being deleted.
+  for (const note of listed) {
+    if (!isKnown(note) || note.sourceId === null) continue;
+    const row = rows.get(note.sourceId);
+    if (!row || row.deleted || nextMemory[note.sourceId]) continue;
+    nextMemory[note.sourceId] = {
+      path: note.path,
+      hash: row.body_hash,
+      // The note is the uploaded text only when the hashes agree; otherwise
+      // its size says nothing about the last upload, and the shrink check
+      // waits for the next PUT to learn it.
+      bytes: note.hash === row.body_hash ? note.bytes : null,
+      missingSince: null,
+    };
+  }
+  const ours = (id: string): boolean => nextMemory[id] !== undefined;
+  const threshold = massChangeThreshold(liveRows.filter((r) => ours(r.source_id.toLowerCase())).length);
   const release = new Set(settings.release);
 
   const actions: UploadAction[] = [];
@@ -388,7 +426,9 @@ export function planUpload(
   const idLess = new Set(listed.filter((n) => isKnown(n) && n.sourceId === null).map((n) => n.path));
   const adoptable = liveRows
     .map((row) => row.source_id.toLowerCase())
-    .filter((id) => !carried.has(id))
+    // Never another vault's row (rule 9): writing its id into this note would
+    // have two vaults overwriting one source on every run.
+    .filter((id) => !carried.has(id) && ours(id))
     .sort();
   const adopted = new Set<string>();
   for (const pass of ['server', 'memory'] as const) {
@@ -422,7 +462,7 @@ export function planUpload(
   // accounted for by the row z.md carries, and y's row was deleted.
   const explainers = new Map<string, string[]>();
   for (const id of liveRows.map((r) => r.source_id.toLowerCase()).sort()) {
-    if (carried.has(id)) continue;
+    if (carried.has(id) || !ours(id)) continue;
     for (const path of new Set([rows.get(id)!.vault_path, memory[id]?.path])) {
       if (path === undefined) continue;
       const list = explainers.get(path) ?? [];
@@ -567,11 +607,9 @@ export function planUpload(
       if (nextMemory[id]) nextMemory[id]!.missingSince = null;
       continue;
     }
-    let entry = nextMemory[id];
-    if (!entry) {
-      entry = { path: row.vault_path, hash: row.body_hash, bytes: null, missingSince: null };
-      nextMemory[id] = entry;
-    }
+    const entry = nextMemory[id];
+    // Rule 9: a row this vault never uploaded or carried is not ours to delete.
+    if (!entry) continue;
     if (entry.missingSince === null) entry.missingSince = settings.now;
     const eligibleAt = entry.missingSince + DEBOUNCE_MS;
     if (settings.now < eligibleAt) {

@@ -211,6 +211,12 @@ with other sources are rebuilt from those sources. Pages created before this
 feature existed cannot be rebuilt; they are marked instead and may still
 mention the note. **Nothing in your vault is ever deleted** by any of this.
 
+Each vault only ever removes notes it uploaded itself (or whose note it still
+holds), so two vaults can upload to the same Javis account without removing
+each other's notes. The plugin remembers what it uploaded in its settings file;
+if that file is lost, a note that was deleted *before* the plugin saw its note
+again stays on the server.
+
 **The one line the plugin writes into your note.** To recognize a note after a
 rename or a move, the plugin adds a single property line to it the first time
 it is uploaded:

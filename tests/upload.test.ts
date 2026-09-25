@@ -316,7 +316,9 @@ describe('uploadOnce: cancellation and failures', () => {
     const { api, deps } = setup({ 'Journal/a.md': stamped(1, 'a\n'), 'Journal/b.md': stamped(2, 'b\n') });
     api.listing = { sources: [gone], counts: {} };
     api.anyPut.push(new AuthRevokedError('Reconnect.'));
-    const result = await uploadOnce(deps());
+    const result = await uploadOnce(
+      deps({ memory: { [id(9)]: { path: 'Journal/gone.md', hash: null, bytes: null, missingSince: null } } }),
+    );
     expect(api.calls).toEqual(['list', `put ${id(1)}`]);
     expect(result.stoppedBy).toEqual({ code: 'auth-revoked', message: 'Reconnect.', needsUserAction: true });
     expect(result.nextMemory[id(9)]!.missingSince).toBe(T0);
@@ -420,7 +422,7 @@ describe('uploadOnce: an id-less note at a tracked path gets its id back (D-PLAN
     const { vault, api, deps } = setup({ 'Journal/a.md': body });
     api.listing = { sources: [row(id(1), 'Journal/a.md', body)], counts: {} };
     vault.beforeProcess = (path) => vault.files.set(path, stamped(9, body));
-    const result = await uploadOnce(deps());
+    const result = await uploadOnce(deps({ memory: { [id(1)]: { path: 'Journal/a.md', hash: null, bytes: 7, missingSince: null } } }));
     expect(api.calls).toEqual(['list']);
     expect(result.failures).toHaveLength(1);
     expect(readSourceId(vault.files.get('Journal/a.md')!)?.id).toBe(id(9));
