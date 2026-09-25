@@ -20,6 +20,7 @@ import {
   utf8Bytes,
 } from '../src/core/note-text';
 import { sha256Hex } from '../src/core/sha256';
+import { restampText, stampText } from '../src/core/stamp';
 import { extractFrontmatterBlock } from '../src/shell/vault';
 
 const ID = '3f2b8c1e-9a4d-4e6f-8b7a-1c2d3e4f5a6b';
@@ -243,6 +244,68 @@ describe('utf8Bytes and hasLoneSurrogate', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// The invariant: stamping never looks like an edit (§F.1, D-HASH-2)
+// ---------------------------------------------------------------------------
+
+const HASH_FIXTURES: string[] = [
+  '',
+  'plain body\n',
+  'no trailing newline',
+  '# Heading\n\n- list\n',
+  '---\n---\n',
+  '---\n---',
+  '---\n\n---\nbody\n',
+  '---\ntitle: x\n---\nbody\n',
+  '---\ntitle: x\n---',
+  [
+    '---',
+    '# a comment',
+    "single: 'quoted'",
+    'double: "quoted: yes"',
+    'tags: [a, b]',
+    'date: 2026-09-24',
+    'odd: !!str 123',
+    '',
+    'aliases:',
+    '  - one',
+    '  - two',
+    '---',
+    'Body with --- inside',
+    '---',
+    'and a rule',
+    '',
+  ].join('\n'),
+  '---\r\ntitle: crlf\r\n---\r\nbody\r\n',
+  '﻿---\ntitle: bom\n---\nbody\n',
+  '﻿bom no fm\n',
+  'crlf no fm\r\nline 2\r\n',
+  '---\njavis_type: concept\njavis_foo:\n  - a\n---\nbody\n',
+  '---\ndesc: |\n  multi\n  line\n---\n',
+  '---\ntags:\n- a\n- b\n---\n',
+  '中文笔记\n😀\n',
+  '---\n\n\n---\n',
+  'intro\n---\nnot fm\n---\n',
+  '---\ntitle: x\n---\n\n\n',
+  '   \n',
+  '---\nkey: value\n# trailing comment\n---\nbody',
+  '---\r\n---\r\nbody',
+  '\n---\nnot: fm\n---\n',
+  '---\nnested:\n  deep:\n    javis_x: 1\n---\nb\n',
+];
+
 describe('stamping never looks like an edit', () => {
-  it.todo('noteHash(stamp(t)) === noteHash(t) over the fixture set (enabled with the stamp)');
+  for (const [i, text] of HASH_FIXTURES.entries()) {
+    it(`fixture ${i}: noteHash(stamp(t)) === noteHash(t), and restamp keeps it`, () => {
+      const stamped = stampText(text, ID);
+      expect(stamped.kind).toBe('ok');
+      if (stamped.kind !== 'ok') return;
+      expect(noteHash(stamped.text)).toBe(noteHash(text));
+      const restamped = restampText(stamped.text, ID2);
+      expect(restamped.kind).toBe('ok');
+      if (restamped.kind !== 'ok') return;
+      expect(noteHash(restamped.text)).toBe(noteHash(text));
+      expect(readSourceId(restamped.text)).toEqual({ id: ID2, valid: true });
+    });
+  }
 });
