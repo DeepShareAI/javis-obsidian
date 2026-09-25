@@ -65,6 +65,9 @@ import { InsufficientScopeError, RateLimitedError, SyncCancelledError, isJavisEr
 // Constants
 // ---------------------------------------------------------------------------
 
+/** Shown for a `failed` row whose `last_error` is null. */
+export const SERVER_FAILURE_FALLBACK = 'the server could not add it to the wiki';
+
 /** §F.2: each read has a 10-second timeout. */
 export const READ_TIMEOUT_MS = 10_000;
 
@@ -230,6 +233,7 @@ export async function uploadOnce(deps: UploadDeps): Promise<UploadResult> {
     waiting: [],
     invalidFolders: [],
     undoReports: [],
+    serverFailures: [],
     counts: {},
     nextMemory: cloneMemory(deps.memory),
     stoppedBy: null,
@@ -314,6 +318,9 @@ export async function uploadOnce(deps: UploadDeps): Promise<UploadResult> {
     });
     result.planned = true;
     result.nextMemory = plan.nextMemory;
+    result.serverFailures = listing.sources
+      .filter((row) => row.status === 'failed' && !row.deleted && plan.nextMemory[row.source_id.toLowerCase()])
+      .map((row) => ({ path: row.vault_path, message: row.last_error ?? SERVER_FAILURE_FALLBACK }));
     result.held = plan.held;
     result.waiting = plan.waiting;
     result.skipped = [...plan.skipped];
@@ -570,6 +577,7 @@ export function uploadReport(
     skipped: (keep ? previous.skipped : rest.skipped).slice(0, REPORT_LIST_CAP),
     waiting: (keep ? previous.waiting : rest.waiting).slice(0, REPORT_LIST_CAP),
     failures: rest.failures.slice(0, REPORT_LIST_CAP),
+    serverFailures: (keep ? previous.serverFailures : rest.serverFailures).slice(0, REPORT_LIST_CAP),
     undoReports: (keep && rest.undoReports.length === 0 ? previous.undoReports : rest.undoReports).slice(
       0,
       REPORT_LIST_CAP,

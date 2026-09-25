@@ -81,6 +81,12 @@ describe('sanitizeSettings (review: loadSettings was untested and trusted memory
     });
   });
 
+  it('a lastUpload from before serverFailures existed loads with an empty list', () => {
+    const old = { failures: [], skipped: [], held: [], waiting: [], invalidFolders: [], undoReports: [], counts: {}, summary: 's', at: 'x' };
+    expect(sanitizeSettings({ lastUpload: old }).lastUpload?.serverFailures).toEqual([]);
+    expect(sanitizeSettings({ lastUpload: { ...old, serverFailures: 'x' } }).lastUpload?.serverFailures).toEqual([]);
+  });
+
   it('a lastUpload without its lists is dropped rather than crashing the settings tab', () => {
     expect(sanitizeSettings({ lastUpload: { summary: 'x' } }).lastUpload).toBeNull();
     expect(sanitizeSettings({ lastUpload: [] }).lastUpload).toBeNull();

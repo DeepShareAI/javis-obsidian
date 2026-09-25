@@ -532,6 +532,25 @@ describe('uploadOnce: deletes and holds', () => {
     expect(result.undoReports).toEqual([{ path: 'Journal/old.md', report }]);
     expect(result.counts).toEqual({ deleted: 1 });
   });
+
+  it('names this vault\'s rows the server gave up distilling, with their error (§D.5, review)', async () => {
+    const { api, deps } = setup({ 'Journal/a.md': stamped(1) });
+    api.listing = {
+      sources: [
+        row(id(1), 'Journal/a.md', stamped(1), { status: 'failed', last_error: 'model output was not valid JSON' }),
+        row(id(2), 'Journal/b.md', 'x', { status: 'failed', last_error: null }),
+        // Another vault's failed row is not this vault's to report.
+        row(id(3), 'Work/c.md', 'x', { status: 'failed', last_error: 'boom' }),
+      ],
+      counts: { failed: 3 },
+    };
+    const memory = { [id(2)]: { path: 'Journal/b.md', hash: null, bytes: null, missingSince: null } };
+    const result = await uploadOnce(deps({ memory }));
+    expect(result.serverFailures).toEqual([
+      { path: 'Journal/a.md', message: 'model output was not valid JSON' },
+      { path: 'Journal/b.md', message: 'the server could not add it to the wiki' },
+    ]);
+  });
 });
 
 describe('uploadOnce: nothing to do without a valid selection', () => {
@@ -584,6 +603,7 @@ describe('summarizeUpload', () => {
     waiting: [],
     invalidFolders: [],
     undoReports: [],
+    serverFailures: [],
     counts: {},
     nextMemory: {},
     stoppedBy: null,
@@ -620,12 +640,13 @@ describe('uploadReport: a run that never planned keeps the last lists (review)',
     expect(result.planned).toBe(false);
     const previous = uploadReport(
       null,
-      { ...result, planned: true, stoppedBy: null, held: [heldDelete], skipped: [{ path: 'J/b.md', reason: 'oversize' }], waiting: [{ sourceId: id(2), path: 'J/c.md', eligibleAt: T0 }] },
+      { ...result, planned: true, stoppedBy: null, held: [heldDelete], serverFailures: [{ path: 'J/f.md', message: 'e' }], skipped: [{ path: 'J/b.md', reason: 'oversize' }], waiting: [{ sourceId: id(2), path: 'J/c.md', eligibleAt: T0 }] },
       'earlier',
       '2026-09-24T00:00:00.000Z',
     );
     const next = uploadReport(previous, result, 'stopped', '2026-09-24T01:00:00.000Z');
     expect(next.held).toEqual([heldDelete]);
+    expect(next.serverFailures).toEqual([{ path: 'J/f.md', message: 'e' }]);
     expect(next.skipped).toEqual(previous.skipped);
     expect(next.waiting).toEqual(previous.waiting);
     expect(next.summary).toBe('stopped');

@@ -112,6 +112,9 @@ calls rather than spec text:
 - **A run that stops before planning keeps the previous held / skipped /
   waiting lists** in `lastUpload` (review fix), so "Review pending changes"
   survives a network blip.
+- **Server-side distill failures are named** (review fix): this vault's rows the
+  poller left `failed` are listed in settings with their `last_error` (§D.5
+  "shows its error"), not just counted.
 - **`data.json` is sanitized by a tested pure function** (`settings-load.ts`);
   a malformed memory entry is repaired toward "unknown" (e.g. a non-number
   `missingSince` → null), which can only delay a delete.

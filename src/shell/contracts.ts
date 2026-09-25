@@ -633,6 +633,15 @@ export interface UploadResult {
   invalidFolders: FolderError[];
   /** Rows carrying an undo report, from this run's listing (§D.4). */
   undoReports: { path: string; report: UndoReport }[];
+  /**
+   * This vault's rows the server's poller left `failed` (§D.5 "After three
+   * failures a row stays `failed` and shows its error"), with `last_error`.
+   * The plugin is the only place the user can see them: every later PUT of
+   * an unchanged note answers 200, so the run itself records no failure
+   * (review). From this run's listing, after planning (so only rows this
+   * vault owns, D-PLAN-18).
+   */
+  serverFailures: { path: string; message: string }[];
   /** Server rows per status, from this run's listing. */
   counts: Record<string, number>;
   /** Persist this as `settings.uploadMemory`, whatever else happened. */

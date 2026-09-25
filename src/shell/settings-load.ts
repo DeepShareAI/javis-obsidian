@@ -140,7 +140,9 @@ function lastUpload(value: unknown): LastUploadReport | null {
   if (!isRecord(value['counts']) || typeof value['summary'] !== 'string' || typeof value['at'] !== 'string') {
     return null;
   }
-  return value as unknown as LastUploadReport;
+  // Added after the first 0.2.0 builds: an older report has none.
+  const serverFailures = Array.isArray(value['serverFailures']) ? value['serverFailures'] : [];
+  return { ...value, serverFailures } as unknown as LastUploadReport;
 }
 
 /** `loadData()`'s result → settings every other module can trust. */
