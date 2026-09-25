@@ -23,6 +23,10 @@ import {
   JavisOAuth,
   normalizeBaseUrl,
   OAUTH_SCOPE,
+  OAUTH_SCOPE_WRITE,
+  decodeJwtClaims,
+  scopesFromJwt,
+  wikiResource,
   parseCallbackQuery,
   portOf,
   randomToken,
@@ -921,5 +925,104 @@ describe('JavisOAuth.onStatusChange', () => {
       throw new Error('bad UI listener');
     });
     await expect(h.auth.refresh()).resolves.toBe(liveJwt);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 0.2.0: the wiki:write step-up (spec 2026-09-24 §C.7; plan D-AUTH-1..5)
+// ---------------------------------------------------------------------------
+
+describe('step-up: authorize URL', () => {
+  const params = {
+    baseUrl: 'https://mcp.javis.is',
+    clientId: 'cid',
+    redirectUri: 'http://127.0.0.1:51234/callback',
+    codeChallenge: 'chal',
+    state: 'st',
+  };
+
+  it('carries the union scope and the /wiki resource when asked', () => {
+    const url = new URL(
+      buildAuthorizeUrl({ ...params, scope: OAUTH_SCOPE_WRITE, resource: 'https://mcp.javis.is/wiki' }),
+    );
+    expect(url.searchParams.get('scope')).toBe('mcp:read wiki:write');
+    expect(url.searchParams.get('resource')).toBe('https://mcp.javis.is/wiki');
+  });
+
+  it('is byte-identical to 0.1.x without them (D-AUTH-1)', () => {
+    expect(buildAuthorizeUrl(params)).toBe(
+      'https://mcp.javis.is/oauth/authorize?response_type=code&client_id=cid&redirect_uri=' +
+        'http%3A%2F%2F127.0.0.1%3A51234%2Fcallback&code_challenge=chal&code_challenge_method=S256' +
+        '&scope=mcp%3Aread&state=st',
+    );
+  });
+
+  it('wikiResource appends /wiki to the normalized origin', () => {
+    expect(wikiResource('https://mcp.javis.is/')).toBe('https://mcp.javis.is/wiki');
+    expect(wikiResource(' http://localhost:8000 ')).toBe('http://localhost:8000/wiki');
+  });
+});
+
+describe('step-up: connect and refresh', () => {
+  const writeJwt = jwt({ sub: 'u', exp: Math.floor(NOW / 1000) + 3600, scope: 'mcp:read wiki:write' });
+
+  it('sends scope and resource on authorize AND on the code exchange', async () => {
+    const h = harness((_req, n) =>
+      n === 1 ? { status: 201, text: JSON.stringify({ client_id: 'cid-1' }) } : tokenBody(writeJwt, 'r1'),
+    );
+    await h.auth.connect({ scope: OAUTH_SCOPE_WRITE, resource: 'https://mcp.javis.is/wiki' });
+    const url = new URL(h.openBrowser.mock.calls[0]![0] as string);
+    expect(url.searchParams.get('scope')).toBe('mcp:read wiki:write');
+    expect(url.searchParams.get('resource')).toBe('https://mcp.javis.is/wiki');
+    const form = new URLSearchParams(h.calls[1]!.body!);
+    expect(form.get('resource')).toBe('https://mcp.javis.is/wiki');
+    expect(h.auth.grantedScopes()).toEqual(['mcp:read', 'wiki:write']);
+  });
+
+  it('a plain connect sends no resource anywhere and scope=mcp:read', async () => {
+    const h = harness((_req, n) =>
+      n === 1 ? { status: 201, text: JSON.stringify({ client_id: 'cid-1' }) } : tokenBody(liveJwt, 'r1'),
+    );
+    await h.auth.connect();
+    const url = new URL(h.openBrowser.mock.calls[0]![0] as string);
+    expect(url.searchParams.get('scope')).toBe('mcp:read');
+    expect(url.searchParams.has('resource')).toBe(false);
+    for (const call of h.calls) expect(call.body ?? '').not.toContain('resource');
+  });
+
+  it('never sends resource or scope on a refresh', async () => {
+    const h = harness(() => tokenBody(writeJwt, 'r2'), {
+      client: { clientId: 'cid-1', redirectUri: 'http://127.0.0.1:51234/callback' },
+      secrets: { [SECRET_ACCESS_TOKEN]: deadJwt, [SECRET_REFRESH_TOKEN]: 'r1' },
+    });
+    await h.auth.getAccessToken();
+    const form = new URLSearchParams(h.calls[0]!.body!);
+    expect(form.get('grant_type')).toBe('refresh_token');
+    expect(form.has('resource')).toBe(false);
+    expect(form.has('scope')).toBe(false);
+  });
+});
+
+describe('grantedScopes', () => {
+  it('decodes the scope claim of the stored token', () => {
+    const h = harness(() => ({ status: 500, text: '' }), {
+      secrets: { [SECRET_ACCESS_TOKEN]: jwt({ scope: 'mcp:read wiki:write' }), [SECRET_REFRESH_TOKEN]: 'r' },
+    });
+    expect(h.auth.grantedScopes()).toEqual(['mcp:read', 'wiki:write']);
+  });
+
+  it('is null for an undecodable token, a token without scope, and no token', () => {
+    const opaque = harness(() => ({ status: 500, text: '' }), { secrets: { [SECRET_ACCESS_TOKEN]: 'opaque' } });
+    expect(opaque.auth.grantedScopes()).toBeNull();
+    const noScope = harness(() => ({ status: 500, text: '' }), { secrets: { [SECRET_ACCESS_TOKEN]: liveJwt } });
+    expect(noScope.auth.grantedScopes()).toBeNull();
+    const none = harness(() => ({ status: 500, text: '' }));
+    expect(none.auth.grantedScopes()).toBeNull();
+  });
+
+  it('decodeJwtClaims and scopesFromJwt are total', () => {
+    expect(decodeJwtClaims('a.b.c')).toBeNull();
+    expect(decodeJwtClaims(jwt({ x: 1 }))).toEqual({ x: 1 });
+    expect(scopesFromJwt(jwt({ scope: '  mcp:read  ' }))).toEqual(['mcp:read']);
   });
 });

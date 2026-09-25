@@ -27,6 +27,7 @@ export type JavisErrorCode =
   | 'rate-limited'
   | 'protocol'
   | 'vault-write'
+  | 'insufficient-scope'
   | 'cancelled';
 
 /**
@@ -126,6 +127,29 @@ export class AuthRevokedError extends JavisError {
 export class AuthCancelledError extends JavisError {
   readonly code = 'auth-cancelled' as const;
   readonly retryable = false;
+}
+
+/**
+ * The server answered `403` with `WWW-Authenticate: Bearer
+ * error="insufficient_scope"` (RFC 6750 §3.1; spec 2026-09-24 §C.4): the token
+ * is valid but was not granted `wiki:write`.
+ *
+ * Not auth-fatal in the `isAuthFatal` sense — the read-only connection still
+ * works, and the download half must keep running — but the user must act:
+ * §C.7 re-authorizes once with the union scope and then "stops and says so".
+ * This is the "says so".
+ */
+export class InsufficientScopeError extends JavisError {
+  readonly code = 'insufficient-scope' as const;
+  readonly retryable = false;
+  override readonly needsUserAction = true;
+
+  constructor(
+    message = 'Javis did not grant permission to write to your wiki. Reconnect in the plugin settings and allow uploads.',
+    options?: { cause?: unknown },
+  ) {
+    super(message, options);
+  }
 }
 
 // ---------------------------------------------------------------------------

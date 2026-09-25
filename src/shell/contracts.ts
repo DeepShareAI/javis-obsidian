@@ -23,11 +23,21 @@
 
 import type { ExportResponse, Frontmatter, ServerPage } from '../core/types';
 import type { SyncAction } from '../core/reconcile';
+import type { FolderError } from '../core/folders';
+import type {
+  HeldAction,
+  ServerSource,
+  SkippedNote,
+  UndoReport,
+  UploadMemory,
+  WaitingDelete,
+} from '../core/upload';
 
 // Re-exported so the shell modules have one import site for the shapes they
 // share. These are the core's types, not copies: `export type` re-exports are
 // erased at compile time (required under `isolatedModules`).
 export type { ExportResponse, Frontmatter, ServerPage, SyncAction };
+export type { FolderError, HeldAction, ServerSource, SkippedNote, UndoReport, UploadMemory, WaitingDelete };
 
 // ---------------------------------------------------------------------------
 // Configuration defaults
@@ -149,8 +159,22 @@ export interface JavisAuth {
    * Rejects with `AuthCancelledError` if the user abandons the browser tab or
    * the listener times out; the loopback socket is closed in a `finally` either
    * way. Resolves only once both tokens are in `SecretStore`.
+   *
+   * With no options this sends exactly what 0.1.x sent (`scope=mcp:read`, no
+   * `resource`), so a read-only install keeps working against a server that
+   * predates the `/wiki` resource (spec 2026-09-24 §I.4). With options it is
+   * the §C.7 step-up: the union scope and the `/wiki` resource, on both the
+   * authorize URL and the code exchange (RFC 8707 §2.2), never on refresh.
    */
-  connect(): Promise<void>;
+  connect(options?: ConnectOptions): Promise<void>;
+
+  /**
+   * The scopes the stored access token was granted, from its JWT `scope`
+   * claim; null when there is no token or it does not decode. Per-device, like
+   * the token itself — `data.json` replicates across devices and could not say
+   * which device holds a write grant.
+   */
+  grantedScopes(): string[] | null;
 
   /**
    * A valid bearer, refreshing first if the access token is expired or within
@@ -175,6 +199,14 @@ export interface JavisAuth {
 
   /** Returns an unsubscribe function. */
   onStatusChange(listener: (status: AuthStatus) => void): () => void;
+}
+
+/** What a step-up `connect` asks for (spec 2026-09-24 §C.3, §C.7). */
+export interface ConnectOptions {
+  /** Space-separated. The union `mcp:read wiki:write`, as the MCP step-up flow requires. */
+  scope?: string;
+  /** RFC 8707 resource indicator: `<baseUrl>/wiki`. */
+  resource?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -378,8 +410,14 @@ export interface VaultAdapter {
 // §F — the sync orchestrator
 // ---------------------------------------------------------------------------
 
-/** What set this run going. Reported in the status text; never changes behaviour. */
-export type SyncTrigger = 'command' | 'vault-open' | 'interval' | 'settings';
+/**
+ * What set this run going. Reported in the status text. Since 0.2.0 it also
+ * decides one thing: whether the upload half may open the browser for a
+ * step-up (`command`, `settings`, `review` only — never from a background
+ * trigger). `edit` is the optional upload-on-edit debounce; `review` is the
+ * "Review pending changes" confirmation.
+ */
+export type SyncTrigger = 'command' | 'vault-open' | 'interval' | 'settings' | 'edit' | 'review';
 
 /** One run's tally, keyed by the `SyncAction.kind` that produced it. */
 export interface SyncResult {
@@ -444,6 +482,153 @@ export interface SyncDeps {
 }
 
 // ---------------------------------------------------------------------------
+// Spec 2026-09-24 §E, §F.2 — the upload half
+// ---------------------------------------------------------------------------
+
+/**
+ * The vault, as the upload half needs it. A separate, narrower seam than
+ * `VaultAdapter`, and — like it — with no delete and no trash: §F.2 "the
+ * plugin never calls `vault.delete` or `vault.trash`" holds for uploads too.
+ */
+export interface UploadVault {
+  /**
+   * Every markdown file under the given folders, with the `javis_source_id`
+   * the metadata cache holds for it (a hint for a note that later fails to
+   * read, plan D-PLAN-3). Listing only: no file is read.
+   */
+  listNotesIn(folders: readonly string[]): Promise<readonly { path: string; cachedSourceId: string | null }[]>;
+
+  /**
+   * The file's text via `vault.read` — from disk, not `cachedRead`, which can
+   * serve a stale copy of a file changed outside Obsidian (§F.2). May block
+   * on an evicted iCloud file; the caller bounds it with a timeout.
+   */
+  readFresh(path: string): Promise<string>;
+
+  /**
+   * `vault.process` returning the text it wrote. The stamp needs the
+   * post-transform text: if another device's stamp arrived between our read
+   * and our write, the transform returns the content unchanged and we must
+   * adopt THAT id, not ours (plan D-STAMP-3).
+   */
+  processText(path: string, transform: (content: string) => string): Promise<string>;
+
+  /** `app.vault.configDir`, for folder validation. */
+  configDir(): string;
+}
+
+/** `GET /wiki/sources/obsidian`, validated (plan D-WIRE-1). */
+export interface SourcesListing {
+  sources: ServerSource[];
+  /** Rows per status. Optional on the wire; `{}` when absent. */
+  counts: Record<string, number>;
+}
+
+/** The PUT body, exactly the four keys §E names. */
+export interface PutSourceBody {
+  vault_path: string;
+  title: string;
+  text: string;
+  body_hash: string;
+}
+
+export type PutOutcome =
+  /** 200: same hash; only path and title were updated. No LLM call. */
+  | { kind: 'unchanged' }
+  /** 202: stored, `status=pending`. */
+  | { kind: 'accepted' }
+  /** 400: the server named what was wrong. Per-note; retrying cannot help. */
+  | { kind: 'rejected'; message: string }
+  /** 409: the row is `deleting`/`deleted`; an id is never resurrected. */
+  | { kind: 'conflict-deleted' }
+  /** 413: above 256 KiB. */
+  | { kind: 'oversize' };
+
+export type DeleteOutcome =
+  /** 202: `status=deleting`, body nulled; pages follow on the next tick. */
+  | { kind: 'deleting' }
+  /** 204: unknown or already deleted. */
+  | { kind: 'gone' }
+  | { kind: 'rejected'; message: string };
+
+/**
+ * The three §E routes. Error contract, as for `JavisApiClient`: 401 → one
+ * refresh, one retry, then `AuthExpiredError`; 403 insufficient_scope →
+ * `InsufficientScopeError`; 429 → `RateLimitedError`; other >= 400 not listed
+ * above → `HttpError`; no response → `NetworkError`; a malformed listing →
+ * `ProtocolError` (a half-understood list must not drive deletes).
+ */
+export interface SourcesApi {
+  list(signal?: AbortSignal): Promise<SourcesListing>;
+  put(sourceId: string, body: PutSourceBody, signal?: AbortSignal): Promise<PutOutcome>;
+  delete(sourceId: string, signal?: AbortSignal): Promise<DeleteOutcome>;
+}
+
+/** Records the paths the upload itself just wrote, so their `modify` is ignored (§F.2). */
+export interface SelfWriteMarker {
+  mark(path: string, now: number): void;
+}
+
+export interface UploadDeps {
+  api: SourcesApi;
+  vault: UploadVault;
+  /** `settings.uploadFolders`. Empty → the run makes no request at all (D-RUN-2). */
+  folders: readonly string[];
+  memory: UploadMemory;
+  /** The injected clock for the debounce, epoch ms. */
+  now: number;
+  /** `crypto.randomUUID` in the plugin; the core never generates an id. */
+  newId: () => string;
+  reuploadAll: boolean;
+  release: readonly string[];
+  signal?: AbortSignal;
+  /**
+   * One interactive re-authorization with the union scope (§C.7). Supplied
+   * only for user-initiated triggers; background runs never open a browser.
+   */
+  stepUp?: () => Promise<void>;
+  /** Cancellable sleep for 429 backoff. Injected so tests do not wait. */
+  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
+  selfWrites?: SelfWriteMarker;
+  /** Per-read timeout, default 10 s (§F.2). */
+  readTimeoutMs?: number;
+  onProgress?: (done: number, total: number) => void;
+}
+
+/** One run of the upload half. `uploadOnce` never throws; this is how it reports. */
+export interface UploadResult {
+  /** PUTs answered 202. */
+  uploaded: number;
+  /** PUTs answered 200 (a rename or re-upload with the same hash). */
+  unchanged: number;
+  /** DELETEs answered 202 or 204. */
+  removed: number;
+  stamped: number;
+  failures: { path: string; message: string }[];
+  skipped: SkippedNote[];
+  held: HeldAction[];
+  waiting: WaitingDelete[];
+  invalidFolders: FolderError[];
+  /** Rows carrying an undo report, from this run's listing (§D.4). */
+  undoReports: { path: string; report: UndoReport }[];
+  /** Server rows per status, from this run's listing. */
+  counts: Record<string, number>;
+  /** Persist this as `settings.uploadMemory`, whatever else happened. */
+  nextMemory: UploadMemory;
+  /** Why the run stopped early, or null. Partial progress above is still real. */
+  stoppedBy: { code: string; message: string; needsUserAction: boolean } | null;
+  /** False when the half did nothing because no folder is selected. */
+  ran: boolean;
+}
+
+/** `UploadResult` minus the memory, as persisted for the settings tab. */
+export interface LastUploadReport extends Omit<UploadResult, 'nextMemory'> {
+  /** ISO8601. */
+  at: string;
+  summary: string;
+}
+
+// ---------------------------------------------------------------------------
 // Persisted settings — data.json
 // ---------------------------------------------------------------------------
 
@@ -499,6 +684,26 @@ export interface JavisSettings {
   lastSyncAt: string | null;
   /** One-line human status from the last run, success or failure. */
   lastSyncSummary: string | null;
+
+  // -- 0.2.0: the upload half (spec 2026-09-24 §F). Every field is additive
+  // -- with a default, so a 0.1.x `data.json` loads unchanged.
+
+  /**
+   * Folders whose notes are uploaded (§F.3.1 validated). Empty by default:
+   * nothing leaves the vault until the user picks a folder.
+   */
+  uploadFolders: string[];
+  /** Upload 2 minutes after the last edit (§F.4). Off by default. */
+  uploadOnEdit: boolean;
+  /**
+   * `{sourceId → {path, hash, bytes, missingSince}}` (§F.1). A cache: losing
+   * it only delays deletes and re-evaluates shrink checks.
+   */
+  uploadMemory: UploadMemory;
+  /** The last upload run, for the settings tab and the review command. */
+  lastUpload: LastUploadReport | null;
+  /** "Re-upload all" survives a run that stops early; cleared by a clean run. */
+  pendingReuploadAll: boolean;
 }
 
 export const DEFAULT_SETTINGS: JavisSettings = {
@@ -511,6 +716,11 @@ export const DEFAULT_SETTINGS: JavisSettings = {
   pendingFullResync: false,
   lastSyncAt: null,
   lastSyncSummary: null,
+  uploadFolders: [],
+  uploadOnEdit: false,
+  uploadMemory: {},
+  lastUpload: null,
+  pendingReuploadAll: false,
 };
 
 /**

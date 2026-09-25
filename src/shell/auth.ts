@@ -48,6 +48,7 @@ import type { Socket } from 'node:net';
 import type {
   AuthStatus,
   BrowserOpener,
+  ConnectOptions,
   JavisAuth,
   OAuthClientRegistration,
   SecretStore,
@@ -67,8 +68,22 @@ import {
 // Constants
 // ---------------------------------------------------------------------------
 
-/** The only scope the server advertises or mints (javis_mcp/oauth/metadata.py:28). */
+/**
+ * The read scope, and still the default: a connect with no upload folder
+ * selected asks for exactly this, as 0.1.x did (javis_mcp/oauth/metadata.py:28).
+ */
 export const OAUTH_SCOPE = 'mcp:read';
+
+/** The scope the upload routes require (spec 2026-09-24 §C.4, §E). */
+export const WIKI_WRITE_SCOPE = 'wiki:write';
+
+/**
+ * What a step-up asks for: the UNION, not just the new scope. `wiki:write`
+ * does not imply read (§C.4), and the MCP step-up flow re-requests everything
+ * the client needs, so asking for `wiki:write` alone would trade the download's
+ * grant for the upload's.
+ */
+export const OAUTH_SCOPE_WRITE = `${OAUTH_SCOPE} ${WIKI_WRITE_SCOPE}`;
 
 /** Shown on the server's client row; purely cosmetic. Truncated to 120 chars. */
 export const CLIENT_NAME = 'Obsidian — Javis Wiki Sync';
@@ -199,6 +214,11 @@ export interface AuthorizeUrlParams {
   codeChallenge: string;
   state: string;
   scope?: string;
+  /**
+   * RFC 8707 resource indicator. Omitted entirely when absent, so a read-only
+   * connect produces a URL byte-identical to 0.1.x's (plan D-AUTH-1).
+   */
+  resource?: string;
 }
 
 /**
@@ -223,6 +243,7 @@ export function buildAuthorizeUrl(params: AuthorizeUrlParams): string {
     scope: params.scope ?? OAUTH_SCOPE,
     state: params.state,
   });
+  if (params.resource !== undefined) query.set('resource', params.resource);
   return `${normalizeBaseUrl(params.baseUrl)}/oauth/authorize?${query.toString()}`;
 }
 
@@ -304,6 +325,41 @@ export function decodeJwtExpiry(token: string): number | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * A JWT's payload claims, or null when the token is not a decodable JWT.
+ * Signature is NOT checked: the server checks it; this only reads what the
+ * token says it was granted, to decide whether to try an upload at all.
+ */
+export function decodeJwtClaims(token: string): Record<string, unknown> | null {
+  const payload = token.split('.')[1];
+  if (!payload) return null;
+  const json = base64UrlDecode(payload);
+  if (json === null) return null;
+  try {
+    const claims: unknown = JSON.parse(json);
+    return typeof claims === 'object' && claims !== null && !Array.isArray(claims)
+      ? (claims as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The space-separated `scope` claim as a list; null when absent or undecodable. */
+export function scopesFromJwt(token: string): string[] | null {
+  const scope = decodeJwtClaims(token)?.['scope'];
+  if (typeof scope !== 'string') return null;
+  return scope.split(' ').filter((s) => s !== '');
+}
+
+/**
+ * The resource the upload routes live under (§C.3): `<origin>/wiki`. For the
+ * default origin that is `https://mcp.javis.is/wiki`.
+ */
+export function wikiResource(baseUrl: string): string {
+  return `${normalizeBaseUrl(baseUrl)}/wiki`;
 }
 
 /** Expired, or close enough to expiry that a request would race the clock. */
@@ -570,7 +626,18 @@ export class JavisOAuth implements JavisAuth {
 
   // -- §D steps 1-5: connect ------------------------------------------------
 
-  async connect(): Promise<void> {
+  /**
+   * The scopes the stored access token carries (plan D-AUTH-2). Read from the
+   * token rather than persisted: the token already says, it is per-device as a
+   * grant is, and a refresh keeps the granted scope (§C.7), so the claim stays
+   * true across refreshes.
+   */
+  grantedScopes(): string[] | null {
+    const access = this.readSecret(SECRET_ACCESS_TOKEN);
+    return access ? scopesFromJwt(access) : null;
+  }
+
+  async connect(options: ConnectOptions = {}): Promise<void> {
     const cached = this.opts.getClient();
     const cachedPort = cached ? portOf(cached.redirectUri) : undefined;
     const listen = this.opts.listen ?? startLoopbackListener;
@@ -595,6 +662,8 @@ export class JavisOAuth implements JavisAuth {
         redirectUri: client.redirectUri,
         codeChallenge: challenge,
         state,
+        ...(options.scope === undefined ? {} : { scope: options.scope }),
+        ...(options.resource === undefined ? {} : { resource: options.resource }),
       });
       await this.openBrowser(url);
 
@@ -608,6 +677,7 @@ export class JavisOAuth implements JavisAuth {
         verifier,
         clientId: client.clientId,
         redirectUri: client.redirectUri,
+        resource: options.resource,
       });
 
       // Persist the registration only once it has demonstrably produced tokens,
@@ -656,6 +726,8 @@ export class JavisOAuth implements JavisAuth {
     verifier: string;
     clientId: string;
     redirectUri: string;
+    /** RFC 8707 §2.2: the same resource again on the code exchange. */
+    resource?: string;
   }): Promise<TokenResponse> {
     const body = await this.postForm('/oauth/token', {
       grant_type: 'authorization_code',
@@ -663,6 +735,7 @@ export class JavisOAuth implements JavisAuth {
       code_verifier: args.verifier,
       redirect_uri: args.redirectUri,
       client_id: args.clientId,
+      ...(args.resource === undefined ? {} : { resource: args.resource }),
     });
     return readTokens(body);
   }
