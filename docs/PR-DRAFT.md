@@ -169,7 +169,7 @@ calls rather than spec text:
 Measured on this branch, 2026-09-24:
 
 ```
-vitest run       17 files, 542 tests passed (baseline 290; 503 before review fixes)
+vitest run       17 files, 568 tests passed (baseline 290; 503 before the first review fixes, 542 before the second)
 tsc -noEmit      exit 0
 esbuild prod     exit 0
 ```
