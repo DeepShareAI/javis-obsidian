@@ -1,10 +1,16 @@
 # Javis Wiki Sync
 
-An Obsidian plugin that mirrors your Javis wiki into a vault, one way.
+An Obsidian plugin that mirrors your Javis wiki into a vault — and, only if
+you choose folders for it, uploads your own notes from those folders into the
+wiki.
 
 Every wiki page becomes a markdown file with working wikilinks, backlinks,
 graph view, and search. The plugin writes only the text between its own
 markers, and **never deletes a file**.
+
+> **Uploading is off until you turn it on, and it sends your notes to a
+> server.** See [Uploading your own notes](#uploading-your-own-notes-optional)
+> for exactly what is sent, where, and how it is removed.
 
 > **Try it on a scratch vault first.**
 > Create an empty vault, connect it, let it sync, and look at what landed. This
@@ -27,8 +33,9 @@ markers, and **never deletes a file**.
   degrading to that.
 - **Desktop only.** `isDesktopOnly: true`. Signing in runs an RFC 8252 loopback
   listener on `127.0.0.1`, which needs Node's `http` module. Mobile has none.
-- **A Javis account**, and a Javis server exposing `GET /wiki/export`
-  (default origin `https://mcp.javis.is`).
+- **A Javis account and a network connection**, and a Javis server exposing
+  `GET /wiki/export` (default origin `https://mcp.javis.is`). Uploading also
+  needs the server's `/wiki/sources/obsidian` routes.
 
 ## Install
 
@@ -57,7 +64,11 @@ when you can close it. Nothing is typed into Obsidian: the plugin registers
 itself with the server, hands the browser a one-time code challenge, and
 receives the tokens back over a loopback address on your own machine.
 
-The grant is **read-only** (`mcp:read`). This plugin cannot write to your wiki.
+Until you choose a folder to upload, the grant is **read-only** (`mcp:read`)
+and the plugin cannot write to your wiki. Choosing the first upload folder asks
+you to reconnect once, and that connection also grants `wiki:write` — the
+permission to store the notes you upload. You can decline it on the consent
+screen and keep the read-only sync.
 
 Both tokens are stored in your OS keychain. **Disconnect** clears them. If the
 connection ever dies for good, the plugin says so once and stops — it does not
@@ -168,11 +179,79 @@ and this plugin is built on the assumption that something else is writing
 underneath it. That is why it is one-way, why it never deletes, and why an
 unchanged page re-renders byte-identically instead of showing up as a change.
 
+## Uploading your own notes (optional)
+
+Off by default. Nothing below happens until you add a folder under Settings →
+**Javis Wiki Sync** → **Upload your notes**.
+
+**What is sent.** The full text of every `.md` note in the folders you select,
+including subfolders — body and properties, except the plugin's own
+`javis_*` lines — plus each note's path and title. Nothing outside those
+folders: not attachments, canvases, or any other file, and never the nine wiki
+folders, the vault root, or `.obsidian/`, which cannot be selected.
+
+**Where it goes.** To your Javis server (the **Javis server** setting, by
+default `https://mcp.javis.is`), over HTTPS, with your own sign-in.
+
+**Why.** The server feeds each note to an AI model that distills it into your
+Javis wiki, the same way it distills your voice sessions and email. The pages
+it produces come back into this vault on the next sync.
+
+**It is stored.** The server keeps the text of each note as you last uploaded
+it, so it can re-distill the note without asking the plugin again. Editing a
+note uploads the new text and the wiki follows, including removals.
+
+**How it is removed.** Delete a note, move it out of the selected folders, or
+remove its folder from the list. After the safety checks below, the plugin asks
+the server to remove it: the stored text is deleted from the server's database
+at that moment, pages only that note produced are removed, and pages it shared
+with other sources are rebuilt from those sources. Pages created before this
+feature existed cannot be rebuilt; they are marked instead and may still
+mention the note. **Nothing in your vault is ever deleted** by any of this.
+
+**The one line the plugin writes into your note.** To recognize a note after a
+rename or a move, the plugin adds a single property line to it the first time
+it is uploaded:
+
+```yaml
+javis_source_id: 3f2b8c1e-9a4d-4e6f-8b7a-1c2d3e4f5a6b
+```
+
+It is inserted as one line of text; the rest of your properties — comments,
+quotes, lists, dates — are left byte for byte as you wrote them. A note whose
+properties block has no closing `---` is not touched, and is listed in settings
+instead. Leave the line alone: if you delete it, the note is uploaded as a new
+one. A copied note gets a fresh id automatically.
+
+**Safety checks before anything is removed.**
+- A note must be missing on two syncs at least five minutes apart.
+- A note that is listed but cannot be read (for example, an iCloud file that is
+  only in the cloud) counts as present, never as deleted.
+- If a selected folder suddenly lists no notes at all, nothing under it is
+  removed.
+- If one sync would remove or empty more than a few notes — the smaller of 50
+  and 20% of your uploaded notes, but at least 5 — every one of those changes
+  is held.
+
+Held changes are announced once and wait for you: run **Review pending
+changes** from the command palette to see them and send them. If the files
+come back, the hold simply disappears.
+
+**When uploads happen.** On every sync, right after the download: when the vault
+opens (which also catches edits made while Obsidian was closed), on the timer if
+you enabled it, and on **Sync now**. Optionally, 2 minutes after you stop
+editing a note (**Upload when a note is edited**, off by default).
+
+**Privacy policy:** <https://javis.is/privacy>. The consent screen you see when
+you allow uploads says the same thing as this section.
+
 ## What it does not do
 
-Write anything back to Javis. Sync transcripts, daily notes, or skill data.
-Create stub notes for links that point nowhere. Delete, trash, or rename a
-file. Run on mobile. Run while Obsidian is closed.
+Upload anything outside the folders you select, including attachments and
+canvases. Write back edits you make to the generated wiki notes. Sync
+transcripts, daily notes, or skill data. Create stub notes for links that point
+nowhere. Delete, trash, or rename a file. Run on mobile. Run while Obsidian is
+closed.
 
 ## Developing
 
@@ -188,7 +267,9 @@ npm run dev         # esbuild watch
 in the sync design lives there and is unit-tested directly. `src/shell/` is the
 part that talks to HTTP, OAuth, and the vault.
 
-Design: `javis-server/docs/superpowers/specs/2026-09-13-obsidian-wiki-sync-design.md`.
+Design: `javis-server/docs/superpowers/specs/2026-09-13-obsidian-wiki-sync-design.md`
+(the download) and `javis-server/docs/superpowers/specs/2026-09-24-obsidian-notes-ingest-design.md`
+(the upload).
 
 ## License
 
