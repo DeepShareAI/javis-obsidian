@@ -278,3 +278,54 @@ describe('maxRevision', () => {
     expect(maxRevision([note('a.md', beyond)], now)).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// 0.2.0: the upload half's vault helpers (spec 2026-09-24 §F.2)
+// ---------------------------------------------------------------------------
+
+import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { join } from 'node:path';
+
+import { cachedSourceIdHint, notesUnder } from '../src/shell/vault';
+
+describe('notesUnder', () => {
+  it('keeps markdown under a selected folder, by path segment', () => {
+    expect(
+      notesUnder(
+        ['Journal/a.md', 'Journal/sub/b.md', 'Journal2/c.md', 'Journal/d.canvas', 'root.md', 'Inbox/e.MD'],
+        ['Journal', 'Inbox'],
+      ),
+    ).toEqual(['Journal/a.md', 'Journal/sub/b.md', 'Inbox/e.MD']);
+  });
+});
+
+describe('cachedSourceIdHint', () => {
+  it('returns a lowercased uuid or null', () => {
+    const id = '3f2b8c1e-9a4d-4e6f-8b7a-1c2d3e4f5a6b';
+    expect(cachedSourceIdHint({ javis_source_id: id.toUpperCase() })).toBe(id);
+    expect(cachedSourceIdHint({ javis_source_id: 'nope' })).toBeNull();
+    expect(cachedSourceIdHint({ javis_source_id: 42 })).toBeNull();
+    expect(cachedSourceIdHint(undefined)).toBeNull();
+  });
+});
+
+describe('the plugin never deletes or trashes a vault file (§F.2)', () => {
+  function sources(dir: string): string[] {
+    return readdirSync(dir).flatMap((name) => {
+      const path = join(dir, name);
+      return statSync(path).isDirectory() ? sources(path) : path.endsWith('.ts') ? [path] : [];
+    });
+  }
+
+  it('no source file calls vault.delete, vault.trash, or .trash(', () => {
+    // Code lines only: the prohibition is quoted in several doc comments.
+    const offenders = sources(join(__dirname, '..', 'src')).flatMap((file) =>
+      readFileSync(file, 'utf8')
+        .split('\n')
+        .filter((line) => !/^\s*(\*|\/\/|\/\*)/.test(line))
+        .filter((line) => /vault\.(delete|trash)\s*\(|\.trash\s*\(/.test(line))
+        .map((line) => `${file}: ${line.trim()}`),
+    );
+    expect(offenders).toEqual([]);
+  });
+});
