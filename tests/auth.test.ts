@@ -538,6 +538,59 @@ describe('JavisOAuth.status', () => {
   });
 });
 
+describe('JavisOAuth over plain http (review)', () => {
+  function insecure(baseUrl: string) {
+    const calls: HttpRequestInit[] = [];
+    const secrets = new FakeSecrets();
+    secrets.set(SECRET_ACCESS_TOKEN, deadJwt);
+    secrets.set(SECRET_REFRESH_TOKEN, 'refresh-1');
+    const openBrowser = vi.fn();
+    const auth = new JavisOAuth({
+      baseUrl,
+      secrets,
+      http: async (req) => {
+        calls.push(req);
+        return tokenBody(liveJwt, 'refresh-2');
+      },
+      getClient: () => ({ clientId: 'cid-1', redirectUri: 'http://127.0.0.1:51234/callback' }),
+      setClient: async () => {},
+      openBrowser,
+      listen: async () => ({
+        port: 51234,
+        redirectUri: 'http://127.0.0.1:51234/callback',
+        waitForCode: async () => 'the-code',
+        close() {},
+      }),
+      now: () => NOW,
+    });
+    return { auth, calls, openBrowser, secrets };
+  }
+
+  it('never registers, authorizes, exchanges or refreshes against a non-loopback http origin', async () => {
+    const h = insecure('http://javis.example.lan');
+    await expect(h.auth.connect({ scope: 'mcp:read wiki:write' })).rejects.toThrow(/https/);
+    await expect(h.auth.refresh()).rejects.toThrow(/https/);
+    await expect(h.auth.getAccessToken()).rejects.toThrow(/https/);
+    expect(h.calls).toEqual([]);
+    expect(h.openBrowser).not.toHaveBeenCalled();
+    // The stored sign-in is not treated as revoked: fixing the URL recovers.
+    expect(h.secrets.get(SECRET_REFRESH_TOKEN)).toBe('refresh-1');
+  });
+
+  it('disconnect still clears the keychain but sends no token over http', async () => {
+    const h = insecure('http://javis.example.lan');
+    await h.auth.disconnect();
+    expect(h.calls).toEqual([]);
+    expect(h.secrets.get(SECRET_REFRESH_TOKEN)).toBeFalsy();
+  });
+
+  it('a server on this computer may use http', async () => {
+    const h = insecure('http://localhost:8000');
+    await expect(h.auth.refresh()).resolves.toBe(liveJwt);
+    expect(h.calls[0]!.url).toBe('http://localhost:8000/oauth/token');
+  });
+});
+
 describe('JavisOAuth.connect', () => {
   it('registers with the loopback URI it actually bound, then exchanges the code', async () => {
     const h = harness((req, n) => {

@@ -39,6 +39,7 @@
  */
 
 import { DEFAULT_PAGE_LIMIT } from './contracts';
+import { assertSecureUrl } from './origin';
 import type {
   ApiClientConfig,
   ExportBatch,
@@ -207,7 +208,8 @@ export function clampLimit(limit?: number | null): number {
  * failure than the full export the caller actually asked for. A trailing slash
  * on `baseUrl` is tolerated because users paste one.
  *
- * Throws a plain `Error` on a `baseUrl` that is not an absolute http(s) URL.
+ * Throws a plain `Error` on a `baseUrl` that is not an absolute http(s) URL,
+ * or that is plain http to anything but this machine (origin.ts, review).
  * That is a configuration mistake rather than a protocol failure, so it stays
  * outside the `JavisError` vocabulary and surfaces as itself.
  */
@@ -226,6 +228,9 @@ export function buildExportUrl(baseUrl: string, query: ExportQuery = {}): string
   if (url.protocol !== 'https:' && url.protocol !== 'http:') {
     throw new Error(`Javis server URL must be http or https, got ${url.protocol}`);
   }
+  // Since 0.2.0 the bearer this request carries may hold `wiki:write`, which
+  // can delete every uploaded source: https, or this machine (origin.ts).
+  assertSecureUrl(url);
 
   const since = typeof query.since === 'string' ? query.since.trim() : '';
   if (since !== '') url.searchParams.set('since', since);

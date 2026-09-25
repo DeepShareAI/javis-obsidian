@@ -63,6 +63,7 @@ import {
   ProtocolError,
   RateLimitedError,
 } from './errors';
+import { secureOrigin } from './origin';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -721,6 +722,10 @@ export class JavisOAuth implements JavisAuth {
   }
 
   async connect(options: ConnectOptions = {}): Promise<void> {
+    // Before binding a port or opening a browser: a refresh token (and, with
+    // uploads on, a `wiki:write` grant) must never be minted over cleartext
+    // to another machine (origin.ts, review).
+    this.secureBaseUrl();
     const cached = this.opts.getClient();
     const cachedPort = cached ? portOf(cached.redirectUri) : undefined;
     const listen = this.opts.listen ?? startLoopbackListener;
@@ -740,7 +745,7 @@ export class JavisOAuth implements JavisAuth {
       const state = randomToken();
 
       const url = buildAuthorizeUrl({
-        baseUrl: this.baseUrl(),
+        baseUrl: this.secureBaseUrl(),
         clientId: client.clientId,
         redirectUri: client.redirectUri,
         codeChallenge: challenge,
@@ -847,7 +852,10 @@ export class JavisOAuth implements JavisAuth {
     const generation = this.generation;
     // Snapshotted, not re-read: `baseUrl` is a live function of the settings,
     // and the origin that issues a token is the only one allowed to be shown it.
-    const origin = this.baseUrl();
+    // Also the https check (origin.ts, review): the refresh token is never
+    // presented over cleartext to another machine. A plain Error, not an
+    // auth error, so the stored sign-in survives until the URL is fixed.
+    const origin = this.secureBaseUrl();
     const refreshToken = this.readSecret(SECRET_REFRESH_TOKEN);
     const client = this.opts.getClient();
 
@@ -936,6 +944,13 @@ export class JavisOAuth implements JavisAuth {
    */
   private async revokeToken(token: string, origin: string): Promise<void> {
     try {
+      // Revoking over cleartext would hand the token to anyone on the path;
+      // an insecure origin just lets it live out its TTL (origin.ts, review).
+      secureOrigin(origin);
+    } catch {
+      return;
+    }
+    try {
       await this.opts.http({
         url: `${origin}/oauth/revoke`,
         method: 'POST',
@@ -952,6 +967,11 @@ export class JavisOAuth implements JavisAuth {
   private baseUrl(): string {
     const raw = typeof this.opts.baseUrl === 'function' ? this.opts.baseUrl() : this.opts.baseUrl;
     return normalizeBaseUrl(raw);
+  }
+
+  /** `baseUrl()`, refused unless https or loopback http (origin.ts). Throws. */
+  private secureBaseUrl(): string {
+    return secureOrigin(this.baseUrl());
   }
 
   private now(): number {
@@ -993,7 +1013,7 @@ export class JavisOAuth implements JavisAuth {
 
   private async postJson(path: string, payload: unknown): Promise<Record<string, unknown>> {
     return this.send({
-      url: `${this.baseUrl()}${path}`,
+      url: `${this.secureBaseUrl()}${path}`,
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body: JSON.stringify(payload),
@@ -1007,7 +1027,7 @@ export class JavisOAuth implements JavisAuth {
     // application/x-www-form-urlencoded, not JSON: the token endpoint reads
     // `await request.form()` (javis_mcp/oauth/token.py:30).
     return this.send({
-      url: `${this.baseUrl()}${path}`,
+      url: `${this.secureBaseUrl()}${path}`,
       method: 'POST',
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',

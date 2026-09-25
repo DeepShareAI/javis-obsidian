@@ -107,8 +107,14 @@ calls rather than spec text:
 - **Folder validation is case-insensitive** (review fix): on APFS/NTFS a
   `sources` folder is the download's `Sources`. Notes carrying the download's
   `javis_slug`/`javis_type` are skipped as `wiki-page` wherever they sit.
-- **Uploads refuse `http:`** unless the host is loopback (review fix): note
-  text and a `wiki:write` bearer must not go in the clear.
+- **The plugin refuses `http:`** unless the host is loopback (review fix):
+  note text and a `wiki:write` bearer must not go in the clear. Second
+  review: the rule (`src/shell/origin.ts`) now also guards `/wiki/export`
+  and every OAuth call (register, authorize, code exchange, refresh; revoke
+  is skipped rather than sent), because the download runs first and carries
+  the same write-capable bearer. **Behavior change from 0.1.x:** a download
+  from a plain-http server on another machine now fails with a sentence
+  asking for https.
 - **A run that stops before planning keeps the previous held / skipped /
   waiting lists** in `lastUpload` (review fix), so "Review pending changes"
   survives a network blip.
