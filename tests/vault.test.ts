@@ -295,7 +295,13 @@ describe('notesUnder', () => {
         ['Journal/a.md', 'Journal/sub/b.md', 'Journal2/c.md', 'Journal/d.canvas', 'root.md', 'Inbox/e.MD'],
         ['Journal', 'Inbox'],
       ),
-    ).toEqual(['Journal/a.md', 'Journal/sub/b.md', 'Inbox/e.MD']);
+    ).toEqual(['Journal/a.md', 'Journal/sub/b.md']);
+  });
+
+  it('keeps only a lowercase .md extension, as the server does (contract review)', () => {
+    // The server answers 400 "vault_path must be a .md note" for `.MD`/`.Md`;
+    // enumerating one would stamp it on disk and then fail its PUT every run.
+    expect(notesUnder(['Inbox/e.MD', 'Inbox/f.Md', 'Inbox/g.md'], ['Inbox'])).toEqual(['Inbox/g.md']);
   });
 });
 

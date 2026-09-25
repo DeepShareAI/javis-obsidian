@@ -329,9 +329,12 @@ export function planUpload(
 
   // D-PLAN-12: the core does not trust the listing. A note outside the
   // selection or not markdown is treated as unlisted, so it cannot count as
-  // present either.
+  // present either. "Markdown" is a lowercase `.md`, case-sensitively, because
+  // that is what the server's `_check_vault_path` accepts: a `Readme.MD` would
+  // be stamped on disk and then refused with a 400 on every run (contract
+  // review; the server's rule is taken where §E's "not `.md`" is ambiguous).
   const inSelection = local.filter(
-    (n) => n.path.toLowerCase().endsWith('.md') && folders.some((f) => isUnderFolder(n.path, f)),
+    (n) => n.path.endsWith('.md') && folders.some((f) => isUnderFolder(n.path, f)),
   );
   // §A: the wiki's own pages are never user notes, wherever they sit.
   const listed = inSelection.filter((n) => n.wikiPage !== true);

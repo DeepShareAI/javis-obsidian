@@ -266,10 +266,16 @@ export function maxRevision(
 /**
  * The markdown paths under any of `folders` (spec 2026-09-24 §F.2 enumeration).
  * A path-segment prefix test, so `Journal2/` is not under `Journal`.
+ *
+ * The extension test is case-sensitive, matching the server's
+ * `_check_vault_path` (`norm.endswith('.md')`). Whether Obsidian lists a
+ * `.MD` file as markdown depends on the build; if it does, keeping it here
+ * would stamp the file and then fail its PUT with a 400 on every run. Such a
+ * file is simply not a note to the upload, like a `.canvas` (contract review).
  */
 export function notesUnder(paths: readonly string[], folders: readonly string[]): string[] {
   return paths.filter(
-    (path) => path.toLowerCase().endsWith('.md') && folders.some((folder) => isUnderFolder(path, folder)),
+    (path) => path.endsWith('.md') && folders.some((folder) => isUnderFolder(path, folder)),
   );
 }
 

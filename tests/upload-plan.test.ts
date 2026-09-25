@@ -303,6 +303,12 @@ describe('planUpload: defensive filters', () => {
     expect(plan.skipped).toEqual([]);
   });
 
+  it('ignores an upper-case .MD extension, which the server refuses (contract review)', () => {
+    const plan = planUpload([note('Journal/a.MD', null), note('Journal/b.Md', null)], [], {}, settings());
+    expect(plan.actions).toEqual([]);
+    expect(plan.skipped).toEqual([]);
+  });
+
   it('an ignored note does not count as present', () => {
     const r = row(id(1), 'Journal/a.md');
     const plan = planUpload([note('Elsewhere/a.md', id(1))], [r], { [id(1)]: mem('Journal/a.md') }, settings());

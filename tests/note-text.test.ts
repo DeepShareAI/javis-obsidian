@@ -215,6 +215,8 @@ describe('noteTitle', () => {
     expect(noteTitle('body', 'Journal/2026/My note.md')).toBe('My note');
     expect(noteTitle('---\ntitle:\n---\n', 'J/a.md')).toBe('a');
     expect(noteTitle('---\ntitle: |\n  multi\n---\n', 'J/a.md')).toBe('a');
+    // Only a lowercase `.md` is stripped, matching the server's _clean_title.
+    expect(noteTitle('body', 'J/Readme.MD')).toBe('Readme.MD');
   });
 
   it(`truncates to ${MAX_TITLE_CHARS} characters without splitting a surrogate pair`, () => {
