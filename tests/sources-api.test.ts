@@ -74,6 +74,20 @@ describe('URLs and headers', () => {
     expect(() => buildSourcesUrl('ftp://x')).toThrow();
   });
 
+  it('refuses cleartext http except to this machine: note text and a write bearer ride on it (review)', () => {
+    expect(() => buildSourcesUrl('http://javis.example.com')).toThrow(/https/);
+    expect(() => buildSourcesUrl('http://10.0.0.5:8000')).toThrow(/https/);
+    expect(buildSourcesUrl('http://localhost:8000')).toBe('http://localhost:8000/wiki/sources/obsidian');
+    expect(buildSourcesUrl('http://127.0.0.1:8000')).toBe('http://127.0.0.1:8000/wiki/sources/obsidian');
+    expect(buildSourcesUrl('http://[::1]:8000')).toBe('http://[::1]:8000/wiki/sources/obsidian');
+  });
+
+  it('an http server stops the run at the listing, before any bearer is sent', async () => {
+    const h = harness([res(200, { sources: [] })], 'http://javis.example.com');
+    await expect(h.client.list()).rejects.toThrow(/https/);
+    expect(h.calls).toEqual([]);
+  });
+
   it('GET sends the bearer and nothing else', async () => {
     const h = harness([res(200, { sources: [] })]);
     await h.client.list();

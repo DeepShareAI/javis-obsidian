@@ -191,7 +191,8 @@ folders: not attachments, canvases, or any other file, and never the nine wiki
 folders, the vault root, or `.obsidian/`, which cannot be selected.
 
 **Where it goes.** To your Javis server (the **Javis server** setting, by
-default `https://mcp.javis.is`), over HTTPS, with your own sign-in.
+default `https://mcp.javis.is`), over HTTPS, with your own sign-in. (Uploads
+refuse a plain `http://` server address unless the server runs on this computer.)
 
 **Why.** The server feeds each note to an AI model that distills it into your
 Javis wiki, the same way it distills your voice sessions and email. The pages

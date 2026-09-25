@@ -29,6 +29,9 @@
  *    upload loop decides which of them stop the run (plan D-RUN-4).
  * 4. **The token appears in one place:** the `Authorization` header. Never in
  *    a URL, an error message, or a `cause`.
+ * 5. **HTTPS, or this machine** (review). An `http:` server URL is refused
+ *    before any request unless its host is loopback: note text and a write
+ *    bearer must not cross a network in the clear.
  *
  * `baseUrl` is read through a function on every request (D-API-2), as
  * `JavisOAuth` does, so a settings change cannot send this user's bearer to
@@ -78,7 +81,25 @@ export function buildSourcesUrl(baseUrl: string, sourceId?: string): string {
   if (url.protocol !== 'https:' && url.protocol !== 'http:') {
     throw new Error(`Javis server URL must be http or https, got ${url.protocol}`);
   }
+  // Rule 5. The download's builder (api.ts) accepts any http origin, and
+  // before 0.2.0 that exposed a read of wiki pages. These routes carry the
+  // full text of every note in the selected folders and a `wiki:write` bearer
+  // that can replace or delete the user's sources, and the README promises
+  // they travel over HTTPS. Cleartext is allowed only to this machine, for a
+  // local development server.
+  if (url.protocol === 'http:' && !isLoopbackHost(url.hostname)) {
+    throw new Error(
+      `Uploads need an https Javis server URL; ${url.origin} is plain http. ` +
+        'Notes are only sent in the clear to a server on this computer (localhost).',
+    );
+  }
   return url.toString();
+}
+
+/** `localhost`, `127.0.0.0/8`, or `::1` — as `URL.hostname` spells them. */
+export function isLoopbackHost(hostname: string): boolean {
+  const host = hostname.toLowerCase();
+  return host === 'localhost' || host === '[::1]' || /^127(\.\d{1,3}){3}$/.test(host);
 }
 
 /**
