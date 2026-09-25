@@ -20,7 +20,8 @@ import type { HeldAction } from '../core/upload';
 const REASON_TEXT: Record<HeldAction['reason'], string> = {
   'mass-change': 'more changes at once than the safety limit allows',
   'vanished-folder': 'its folder currently lists no notes',
-  'unreadable-ambiguous': 'a note in your folders could not be read, and might be this one',
+  'unreadable-ambiguous':
+    'a note in your folders could not be identified (it could not be read, or its javis_source_id line is damaged) and might be this one',
   'suspicious-edit': 'the note is now empty, or less than a fifth of the size it was last uploaded at',
 };
 

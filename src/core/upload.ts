@@ -20,9 +20,10 @@
  *    note that is listed but could not be read — an iCloud "dataless" file, a
  *    read that timed out — is `skip-unreadable`: neither a put nor a delete. A
  *    listed note whose identity we cannot read (unreadable with no cached id,
- *    a hand-mangled id, an unclosed fence) might be ANY tracked note after a
- *    rename, so while one exists that sits at no known path, every delete is
- *    held (`unreadable-ambiguous`, D-PLAN-4).
+ *    a hand-mangled id) might be ANY tracked note after a rename, so while
+ *    one exists that no uncarried live row explains by path, every delete is
+ *    held (`unreadable-ambiguous`, D-PLAN-4). A note read in full with no id
+ *    line at all cannot be a tracked note and holds nothing (review).
  * 2. **Two misses at least five minutes apart** (§F.3.3). The first run that
  *    misses a row writes `missingSince` into `nextMemory`; only a later run at
  *    least `DEBOUNCE_MS` after that may plan the delete. Losing memory restarts
@@ -359,9 +360,6 @@ export function planUpload(
     if (!isKnown(note)) unknownPaths.add(note.path);
   }
   const carried = new Set(presentIds);
-  const knownPaths = new Set<string>();
-  for (const row of server) knownPaths.add(row.vault_path);
-  for (const entry of Object.values(memory)) knownPaths.add(entry.path);
   for (const row of liveRows) {
     const id = row.source_id.toLowerCase();
     if (unknownPaths.has(row.vault_path) || (memory[id] && unknownPaths.has(memory[id]!.path))) presentIds.add(id);
@@ -386,10 +384,46 @@ export function planUpload(
       presentIds.add(id);
     }
   }
-  // Rule 1: an unidentified note at no known path could be any row, renamed.
-  const ambiguous = listed.some(
-    (n) => !isKnown(n) && (n.sourceId === null || n.invalidId) && !knownPaths.has(n.path),
-  );
+  // Rule 1: a note that may be hiding an identity, and that no row can
+  // explain, could be ANY missing row after a rename, so every delete waits.
+  //
+  // "May be hiding an identity" is narrower than "unknown" (review). A note
+  // that could not be read, or whose id line is damaged, might carry any id.
+  // A note that WAS read in full and has no id line at all — an unclosed
+  // fence that is really a horizontal rule at the top, properties half
+  // typed, a lone surrogate — cannot be a tracked note: a renamed one would
+  // still carry its line, and the shell's lenient scan finds it anywhere in
+  // the text. Counting it held every delete in the vault for as long as that
+  // note existed, under a message saying it "could not be read".
+  //
+  // "Explain" is narrower than "sits at a known path" (review). Only a live
+  // row that no listed note carries can be the note at its server or
+  // remembered path, and each such row explains at most one note. Before,
+  // any row's path counted — a deleted row's, or one whose note had simply
+  // been renamed and was listed elsewhere — so after a swap (a.md → z.md,
+  // y.md → a.md, a.md still dataless here) the unreadable a.md looked
+  // accounted for by the row z.md carries, and y's row was deleted.
+  const explainers = new Map<string, string[]>();
+  for (const id of liveRows.map((r) => r.source_id.toLowerCase()).sort()) {
+    if (carried.has(id)) continue;
+    for (const path of new Set([rows.get(id)!.vault_path, memory[id]?.path])) {
+      if (path === undefined) continue;
+      const list = explainers.get(path) ?? [];
+      list.push(id);
+      explainers.set(path, list);
+    }
+  }
+  const hidesIdentity = (n: LocalNote): boolean => n.invalidId || (!n.readable && n.sourceId === null);
+  const explained = new Set<string>();
+  let ambiguous = false;
+  for (const n of [...listed].filter(hidesIdentity).sort((a, b) => (a.path < b.path ? -1 : 1))) {
+    const by = (explainers.get(n.path) ?? []).find((id) => !explained.has(id));
+    if (by === undefined) {
+      ambiguous = true;
+      break;
+    }
+    explained.add(by);
+  }
 
   // -- per-note decisions --------------------------------------------------
   const byId = new Map<string, LocalNote[]>();

@@ -60,6 +60,12 @@ calls rather than spec text:
   written back (`adopt`) and the edit goes through the normal put and
   shrink checks. (Review fix: before, such a note let the row be deleted and
   the note re-ingested as a new source.)
+  Second review: only a note that may *hide* an identity (unreadable with no
+  hint, or a damaged id line) holds deletes — a fully read note with no id
+  line (a `---` horizontal rule at the top) no longer holds every delete for
+  as long as it exists; and only a live row that no listed note carries can
+  explain such a note by path, one note per row, so a rename swap or a
+  deleted row's path no longer lets a possibly-renamed note's source go.
 - **D-PLAN-8, changed in review.** An emptied or 80%-shrunk note is always
   held (`suspicious-edit`) and counts toward the mass-change threshold
   (§F.3.5 "its `put` is held with the deletes"; §H). It used to be held only

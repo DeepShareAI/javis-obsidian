@@ -128,6 +128,9 @@ export function lenientSourceId(text: string): string | null {
   return isUuid(id) ? id : null;
 }
 
+/** Any `javis_source_id:` line, however damaged its value. */
+const ANY_SOURCE_ID_LINE = /^\s*["']?javis_source_id["']?\s*:/m;
+
 /** A readable note's text as `planUpload` sees it. */
 export function describeNote(path: string, text: string, cachedSourceId: string | null): LocalNote {
   const malformed = frontmatterRange(text).kind === 'malformed';
@@ -135,7 +138,16 @@ export function describeNote(path: string, text: string, cachedSourceId: string 
   const invalidChars = hasLoneSurrogate(text);
   const sent = uploadText(text);
   let sourceId: string | null = read?.valid ? read.id : null;
-  if (malformed) sourceId = lenientSourceId(text) ?? cachedSourceId;
+  let invalidId = read !== null && !read.valid;
+  if (malformed) {
+    const lenient = lenientSourceId(text);
+    sourceId = lenient ?? cachedSourceId;
+    // `readSourceId` sees nothing in an unclosed block. A `javis_source_id`
+    // line that the lenient scan cannot read is a damaged id: the note may
+    // be any tracked note, and the planner must treat it as hiding one
+    // (review). A malformed note with no such line at all hides nothing.
+    if (lenient === null && ANY_SOURCE_ID_LINE.test(text)) invalidId = true;
+  }
   return {
     path,
     sourceId,
@@ -144,7 +156,7 @@ export function describeNote(path: string, text: string, cachedSourceId: string 
     readable: true,
     blank: sent.trim() === '',
     invalidChars,
-    invalidId: read !== null && !read.valid,
+    invalidId,
     malformed,
     wikiPage: isWikiPageText(text),
   };

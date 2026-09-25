@@ -263,6 +263,22 @@ describe('uploadOnce: reads', () => {
     expect(describeNote('Journal/c.md', '\n  \n', null).blank).toBe(true);
     expect(describeNote('Journal/d.md', 'bad \ud800', null)).toMatchObject({ invalidChars: true, hash: null });
   });
+
+  it('describeNote: a malformed note with a damaged id line is invalid-id, one with none is not (review)', () => {
+    // A damaged id inside an unclosed fence could be any tracked note: it must
+    // stay identity-unknown, or the planner would treat it as a plain new note.
+    expect(describeNote('J/a.md', '---\njavis_source_id: 12ab\nno close\n', null)).toMatchObject({
+      malformed: true,
+      invalidId: true,
+      sourceId: null,
+    });
+    // A horizontal rule at the top, no id line anywhere: fully read, carries no identity.
+    expect(describeNote('J/b.md', '---\nIdeas\n- a\n', null)).toMatchObject({
+      malformed: true,
+      invalidId: false,
+      sourceId: null,
+    });
+  });
 });
 
 describe('uploadOnce: cancellation and failures', () => {

@@ -433,6 +433,69 @@ describe('planUpload: unreadable is unknown (§F.3.2)', () => {
     expect(plan.held).toMatchObject([{ reason: 'unreadable-ambiguous' }]);
   });
 
+  it('a fully read malformed note with no id line holds nothing: it cannot be a tracked note (review)', () => {
+    const gone = row(id(1), 'Journal/old.md');
+    const draft = note('Journal/draft.md', null, { malformed: true });
+    const plan = planUpload([draft], [gone], missingLongAgo([gone]), settings());
+    expect(plan.actions).toEqual([{ kind: 'delete', sourceId: id(1), path: 'Journal/old.md' }]);
+    expect(plan.held).toEqual([]);
+    expect(plan.skipped).toEqual([{ path: 'Journal/draft.md', reason: 'unstampable' }]);
+    // The same for a readable note with a lone surrogate and no id line.
+    const odd = note('Journal/odd.md', null, { invalidChars: true, hash: null });
+    expect(planUpload([odd], [gone], missingLongAgo([gone]), settings()).held).toEqual([]);
+  });
+
+  it('a malformed note with a damaged id line still holds deletes', () => {
+    const gone = row(id(1), 'Journal/old.md');
+    const plan = planUpload(
+      [note('Journal/draft.md', null, { malformed: true, invalidId: true })],
+      [gone],
+      missingLongAgo([gone]),
+      settings(),
+    );
+    expect(plan.held).toMatchObject([{ key: `delete:${id(1)}`, reason: 'unreadable-ambiguous' }]);
+  });
+
+  it('swap: an unreadable note at a path whose row another note carries is ambiguous (review)', () => {
+    // a.md -> z.md, then y.md -> a.md on another device; a.md is dataless here.
+    const z = row(id(26), 'Journal/a.md');
+    const y = row(id(25), 'Journal/y.md');
+    const plan = planUpload(
+      [note('Journal/z.md', id(26), { hash: z.body_hash }), note('Journal/a.md', null, { readable: false, hash: null })],
+      [z, y],
+      { [id(26)]: mem('Journal/a.md'), [id(25)]: mem('Journal/y.md', { missingSince: T0 - DEBOUNCE_MS }) },
+      settings(),
+    );
+    expect(plan.actions).toMatchObject([{ kind: 'put', sourceId: id(26), reason: 'moved' }]);
+    expect(plan.held).toMatchObject([{ key: `delete:${id(25)}`, reason: 'unreadable-ambiguous' }]);
+  });
+
+  it('an unreadable note at a DELETED row path is ambiguous (review)', () => {
+    const dead = row(id(1), 'Journal/old.md', { deleted: true, status: 'deleted' });
+    const y = row(id(2), 'Journal/y.md');
+    const plan = planUpload(
+      [note('Journal/old.md', null, { readable: false, hash: null })],
+      [dead, y],
+      { [id(1)]: mem('Journal/old.md'), ...missingLongAgo([y]) },
+      settings(),
+    );
+    expect(plan.actions).toEqual([]);
+    expect(plan.held).toMatchObject([{ key: `delete:${id(2)}`, reason: 'unreadable-ambiguous' }]);
+  });
+
+  it('one uncarried row explains at most one unknown note', () => {
+    const b = row(id(2), 'Journal/b.md');
+    const gone = row(id(1), 'Journal/a.md');
+    // Two unreadable notes, one at b's server path, one at b's remembered path.
+    const plan = planUpload(
+      [note('Journal/b.md', null, { readable: false, hash: null }), note('Journal/b2.md', null, { readable: false, hash: null })],
+      [gone, b],
+      { ...missingLongAgo([gone]), [id(2)]: mem('Journal/b2.md') },
+      settings(),
+    );
+    expect(plan.held).toMatchObject([{ key: `delete:${id(1)}`, reason: 'unreadable-ambiguous' }]);
+  });
+
   it('a malformed note with a scanned id counts that row present', () => {
     const r = row(id(1), 'Journal/a.md');
     const plan = planUpload([note('Journal/a2.md', id(1), { malformed: true })], [r], missingLongAgo([r]), settings());
