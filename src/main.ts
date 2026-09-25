@@ -32,7 +32,7 @@
 
 import { Notice, Plugin, TFile } from 'obsidian';
 
-import { isUnderFolder, normalizeFolder } from './core/folders';
+import { isUnderFolder } from './core/folders';
 import { JavisWikiApiClient, obsidianTransport } from './shell/api';
 import { JavisOAuth, connectOptionsFor, isLegacyAudience, lacksWriteGrant } from './shell/auth';
 import type {
@@ -45,7 +45,8 @@ import type {
 import { DEFAULT_SETTINGS } from './shell/contracts';
 import { isJavisError } from './shell/errors';
 import { ReviewPendingModal } from './shell/review-modal';
-import { JavisSettingTab, clampMinutes, describe } from './shell/settings';
+import { JavisSettingTab, describe } from './shell/settings';
+import { sanitizeSettings } from './shell/settings-load';
 import { JavisSourcesApiClient } from './shell/sources-api';
 import { summarize, syncOnce } from './shell/sync';
 import {
@@ -222,27 +223,11 @@ export default class JavisWikiSyncPlugin extends Plugin {
   // -- settings -------------------------------------------------------------
 
   async loadSettings(): Promise<void> {
-    const stored = (await this.loadData()) as Partial<JavisSettings> | null;
-    this.settings = { ...DEFAULT_SETTINGS, ...(stored ?? {}) };
-    // A `data.json` edited by hand, or written by an older version, must not be
-    // able to put a nonsense value into `setInterval`.
-    this.settings.intervalMinutes = clampMinutes(
-      String(this.settings.intervalMinutes),
-      DEFAULT_SETTINGS.intervalMinutes,
-    );
-    // The same for the 0.2.0 fields: a hand-edited or foreign value must not be
-    // able to reach `planUpload` as something other than its declared type.
-    const s = this.settings;
-    s.uploadFolders = Array.isArray(s.uploadFolders)
-      ? s.uploadFolders.filter((f): f is string => typeof f === 'string').map(normalizeFolder)
-      : [];
-    s.uploadMemory =
-      typeof s.uploadMemory === 'object' && s.uploadMemory !== null && !Array.isArray(s.uploadMemory)
-        ? s.uploadMemory
-        : {};
-    s.uploadOnEdit = s.uploadOnEdit === true;
-    s.pendingReuploadAll = s.pendingReuploadAll === true;
-    if (typeof s.lastUpload !== 'object' || Array.isArray(s.lastUpload)) s.lastUpload = null;
+    // Every field checked against its type, and a malformed upload memory
+    // entry repaired toward "unknown", which can only delay a delete
+    // (settings-load.ts). A hand-edited or foreign `data.json` must not be
+    // able to put a nonsense value into `setInterval` or `planUpload`.
+    this.settings = sanitizeSettings(await this.loadData());
   }
 
   async saveSettings(): Promise<void> {

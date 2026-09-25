@@ -26,6 +26,10 @@ import { DEFAULT_BASE_URL, DEFAULT_SETTINGS } from './contracts';
 import { isJavisError } from './errors';
 import { FolderSuggest } from './folder-suggest';
 import { describeHeld } from './review-modal';
+import { MAX_INTERVAL_MINUTES, MIN_INTERVAL_MINUTES, clampMinutes } from './settings-load';
+
+// Moved to the pure settings-load.ts so they can be tested; re-exported for existing importers.
+export { MAX_INTERVAL_MINUTES, MIN_INTERVAL_MINUTES, clampMinutes };
 import type JavisWikiSyncPlugin from '../main';
 
 /** D-UI-2: each list in the Upload section shows at most this many entries. */
@@ -47,9 +51,6 @@ const SKIP_TEXT: Record<string, string> = {
   'wiki-page': 'a page Javis wrote; the wiki is never uploaded back to itself',
 };
 
-/** Bounds on the interval field. Below a minute the plugin is a busy-loop. */
-export const MIN_INTERVAL_MINUTES = 5;
-export const MAX_INTERVAL_MINUTES = 24 * 60;
 
 /** What the three connection states say, and what the button does next. */
 const STATUS_TEXT: Record<AuthStatus, string> = {
@@ -502,14 +503,6 @@ export function describeUndo(path: string, report: LastUploadReport['undoReports
   return line;
 }
 
-/** Keep a typo out of `setInterval`. A blank or absurd value keeps the old one. */
-export function clampMinutes(raw: string, fallback: number): number {
-  const parsed = Number.parseInt(raw.trim(), 10);
-  if (!Number.isFinite(parsed)) return fallback;
-  if (parsed < MIN_INTERVAL_MINUTES) return MIN_INTERVAL_MINUTES;
-  if (parsed > MAX_INTERVAL_MINUTES) return MAX_INTERVAL_MINUTES;
-  return parsed;
-}
 
 /**
  * The sentence to show the user.
