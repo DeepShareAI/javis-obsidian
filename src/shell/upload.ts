@@ -30,6 +30,8 @@
  *    successful PUT/DELETE survive a run that stopped halfway.
  * 6. **No folder selected → no request at all** (D-RUN-2). A 0.2.0 install
  *    that never opts in makes exactly the 0.1.x requests.
+ * 7. **No write grant → step up (or stop) before the first request**, so no
+ *    note is stamped by a run that cannot upload it (review of §C.7).
  */
 
 import { validateFolders } from '../core/folders';
@@ -230,8 +232,37 @@ export async function uploadOnce(deps: UploadDeps): Promise<UploadResult> {
     return result;
   }
 
-  const call = retrying(deps);
+  // The run's one step-up (D-AUTH-4), shared by the pre-flight below and by
+  // every request's 403 handling in `retrying`.
+  const budget = { steppedUp: false };
+  const call = retrying(deps, budget);
   const signal = deps.signal;
+
+  // Rule 7. A token that visibly cannot write is fixed (or the run stops)
+  // before any request and any stamp. Waiting for the server's 403 would put
+  // a `javis_source_id` into the first note ahead of its PUT (rule 1), and a
+  // user who then declines `wiki:write` is left with an edited file and
+  // nothing uploaded. It also reaches the step-up for a pre-0.2.0
+  // `/mcp`-audience token, which the upload routes answer with a 401 — read
+  // by the client as expiry, never as the 403 that `retrying` steps up on.
+  if (deps.lacksWriteGrant?.()) {
+    if (!deps.stepUp) {
+      result.stoppedBy = stopReason(new InsufficientScopeError());
+      return result;
+    }
+    budget.steppedUp = true;
+    try {
+      await deps.stepUp();
+    } catch (error) {
+      result.stoppedBy = stopReason(new InsufficientScopeError(undefined, { cause: error }));
+      return result;
+    }
+    // The consent screen lets the user grant read and decline write (§C.2).
+    if (deps.lacksWriteGrant()) {
+      result.stoppedBy = stopReason(new InsufficientScopeError());
+      return result;
+    }
+  }
 
   try {
     // 1. The server's list. Nothing can be decided without it: a note the
@@ -315,9 +346,8 @@ async function readNotes(
  * step-up (D-AUTH-4). The step-up budget is shared by every call in the run:
  * after one re-authorization, a second `insufficient_scope` stops the run.
  */
-function retrying(deps: UploadDeps): <T>(fn: () => Promise<T>) => Promise<T> {
+function retrying(deps: UploadDeps, budget: { steppedUp: boolean }): <T>(fn: () => Promise<T>) => Promise<T> {
   const sleep = deps.sleep ?? defaultSleep;
-  let steppedUp = false;
   return async function call<T>(fn: () => Promise<T>): Promise<T> {
     let rateLimited = 0;
     for (;;) {
@@ -330,8 +360,8 @@ function retrying(deps: UploadDeps): <T>(fn: () => Promise<T>) => Promise<T> {
           await sleep(Math.min(wait, MAX_BACKOFF_MS), deps.signal);
           continue;
         }
-        if (error instanceof InsufficientScopeError && deps.stepUp && !steppedUp) {
-          steppedUp = true;
+        if (error instanceof InsufficientScopeError && deps.stepUp && !budget.steppedUp) {
+          budget.steppedUp = true;
           try {
             await deps.stepUp();
           } catch (stepUpError) {

@@ -599,6 +599,16 @@ export interface UploadDeps {
    * only for user-initiated triggers; background runs never open a browser.
    */
   stepUp?: () => Promise<void>;
+  /**
+   * True when the stored token visibly cannot write: its decodable scope
+   * lacks `wiki:write`, or its decodable audience is not `/wiki`
+   * (`lacksWriteGrant` in auth.ts). Asked before the first request, so a run
+   * that is going to need a step-up gets it before it stamps anything into a
+   * note — a stamp written ahead of a 403 the user then declines is an edit
+   * to their file with nothing uploaded. Absent or false → try, and let a 403
+   * decide (D-RUN-3).
+   */
+  lacksWriteGrant?: () => boolean;
   /** Cancellable sleep for 429 backoff. Injected so tests do not wait. */
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
   selfWrites?: SelfWriteMarker;

@@ -34,7 +34,7 @@ import { Notice, Plugin, TFile } from 'obsidian';
 
 import { isUnderFolder, normalizeFolder } from './core/folders';
 import { JavisWikiApiClient, obsidianTransport } from './shell/api';
-import { JavisOAuth, WIKI_WRITE_SCOPE, connectOptionsFor, isLegacyAudience, lacksWriteGrant } from './shell/auth';
+import { JavisOAuth, connectOptionsFor, isLegacyAudience, lacksWriteGrant } from './shell/auth';
 import type {
   ConnectOptions,
   JavisSettings,
@@ -404,11 +404,12 @@ export default class JavisWikiSyncPlugin extends Plugin {
     if (this.settings.uploadFolders.length === 0) return null; // D-RUN-2
     const interactive = INTERACTIVE.has(trigger);
 
-    // D-RUN-3: a background run with a token that visibly lacks `wiki:write`
-    // does not try, and does not open a browser. An undecodable token is tried,
-    // and a 403 decides.
-    const scopes = this.auth.grantedScopes();
-    if (!interactive && scopes !== null && !scopes.includes(WIKI_WRITE_SCOPE)) {
+    // D-RUN-3: a background run with a token that visibly cannot write (no
+    // `wiki:write`, or the pre-0.2.0 audience) does not try, and does not open
+    // a browser. An undecodable token is tried, and a 403 decides. An
+    // interactive run passes the same check to `uploadOnce`, which steps up
+    // before it stamps anything (its rule 7).
+    if (!interactive && this.#lacksWriteGrant()) {
       return 'paused; reconnect in settings to allow uploads';
     }
 
@@ -427,6 +428,7 @@ export default class JavisWikiSyncPlugin extends Plugin {
       signal,
       // D-AUTH-4: only a person who just clicked may be sent to the browser.
       stepUp: interactive ? () => this.auth.connect(this.uploadConnectOptions()) : undefined,
+      lacksWriteGrant: () => this.#lacksWriteGrant(),
       selfWrites: this.#selfWrites,
       onProgress: (done, total) => this.#setStatus(`Javis: uploading… ${done}/${total}`),
     });

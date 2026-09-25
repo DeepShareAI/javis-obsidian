@@ -378,6 +378,54 @@ describe('uploadOnce: step-up once (§C.7, D-AUTH-4)', () => {
   });
 });
 
+describe('uploadOnce: step-up before anything is written (review of §C.7)', () => {
+  it('a token that visibly cannot write steps up before the first request, so no note is stamped first', async () => {
+    let canWrite = false;
+    const stepUp = vi.fn(async () => {
+      canWrite = true;
+    });
+    const { vault, api, deps } = setup({ 'Journal/new.md': '# New\nhello\n' });
+    vault.log.length = 0;
+    const result = await uploadOnce(deps({ stepUp, lacksWriteGrant: () => !canWrite }));
+    expect(stepUp).toHaveBeenCalledTimes(1);
+    expect(result.stoppedBy).toBeNull();
+    expect(api.calls[0]).toBe('list');
+    expect(result.uploaded).toBe(1);
+  });
+
+  it('a declined or abandoned step-up stops the run before any stamp or request', async () => {
+    const { vault, api, deps } = setup({ 'Journal/new.md': '# New\nhello\n' });
+    const declined = await uploadOnce(deps({ stepUp: async () => {}, lacksWriteGrant: () => true }));
+    expect(declined.stoppedBy).toMatchObject({ code: 'insufficient-scope', needsUserAction: true });
+    const abandoned = await uploadOnce(
+      deps({ stepUp: async () => Promise.reject(new Error('closed tab')), lacksWriteGrant: () => true }),
+    );
+    expect(abandoned.stoppedBy?.code).toBe('insufficient-scope');
+    expect(api.calls).toEqual([]);
+    expect(vault.files.get('Journal/new.md')).toBe('# New\nhello\n');
+    expect(vault.log.filter((l) => l.startsWith('process'))).toEqual([]);
+  });
+
+  it('the pre-flight step-up spends the run budget: a later 403 stops the run', async () => {
+    let canWrite = false;
+    const stepUp = vi.fn(async () => {
+      canWrite = true;
+    });
+    const { api, deps } = setup({ 'Journal/a.md': stamped(1) });
+    api.anyPut.push(new InsufficientScopeError());
+    const result = await uploadOnce(deps({ stepUp, lacksWriteGrant: () => !canWrite }));
+    expect(stepUp).toHaveBeenCalledTimes(1);
+    expect(result.stoppedBy?.code).toBe('insufficient-scope');
+  });
+
+  it('without a stepUp (background) a token that cannot write makes no request', async () => {
+    const { api, deps } = setup({ 'Journal/a.md': stamped(1) });
+    const result = await uploadOnce(deps({ lacksWriteGrant: () => true }));
+    expect(result.stoppedBy).toMatchObject({ code: 'insufficient-scope', needsUserAction: true });
+    expect(api.calls).toEqual([]);
+  });
+});
+
 describe('uploadOnce: deletes and holds', () => {
   it('deletes a row missing past the debounce and forgets it', async () => {
     const { api, deps } = setup({ 'Journal/a.md': stamped(1) });
