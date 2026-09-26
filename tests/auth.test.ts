@@ -21,8 +21,18 @@ import {
   isExpired,
   isInvalidGrant,
   JavisOAuth,
+  canonicalOrigin,
+  originFromAudiences,
   normalizeBaseUrl,
   OAUTH_SCOPE,
+  OAUTH_SCOPE_WRITE,
+  decodeJwtClaims,
+  scopesFromJwt,
+  wikiResource,
+  audiencesFromJwt,
+  connectOptionsFor,
+  isLegacyAudience,
+  lacksWriteGrant,
   parseCallbackQuery,
   portOf,
   randomToken,
@@ -33,7 +43,7 @@ import {
   type HttpTransport,
   type LoopbackListener,
 } from '../src/shell/auth';
-import { SECRET_ACCESS_TOKEN, SECRET_REFRESH_TOKEN } from '../src/shell/contracts';
+import { SECRET_ACCESS_TOKEN, SECRET_REFRESH_TOKEN, SECRET_TOKEN_ORIGIN } from '../src/shell/contracts';
 import type { OAuthClientRegistration, SecretStore } from '../src/shell/contracts';
 import {
   AuthCancelledError,
@@ -41,6 +51,7 @@ import {
   AuthRevokedError,
   HttpError,
   NetworkError,
+  OriginChangedError,
   ProtocolError,
   RateLimitedError,
 } from '../src/shell/errors';
@@ -530,6 +541,59 @@ describe('JavisOAuth.status', () => {
   });
 });
 
+describe('JavisOAuth over plain http (review)', () => {
+  function insecure(baseUrl: string) {
+    const calls: HttpRequestInit[] = [];
+    const secrets = new FakeSecrets();
+    secrets.set(SECRET_ACCESS_TOKEN, deadJwt);
+    secrets.set(SECRET_REFRESH_TOKEN, 'refresh-1');
+    const openBrowser = vi.fn();
+    const auth = new JavisOAuth({
+      baseUrl,
+      secrets,
+      http: async (req) => {
+        calls.push(req);
+        return tokenBody(liveJwt, 'refresh-2');
+      },
+      getClient: () => ({ clientId: 'cid-1', redirectUri: 'http://127.0.0.1:51234/callback' }),
+      setClient: async () => {},
+      openBrowser,
+      listen: async () => ({
+        port: 51234,
+        redirectUri: 'http://127.0.0.1:51234/callback',
+        waitForCode: async () => 'the-code',
+        close() {},
+      }),
+      now: () => NOW,
+    });
+    return { auth, calls, openBrowser, secrets };
+  }
+
+  it('never registers, authorizes, exchanges or refreshes against a non-loopback http origin', async () => {
+    const h = insecure('http://javis.example.lan');
+    await expect(h.auth.connect({ scope: 'mcp:read wiki:write' })).rejects.toThrow(/https/);
+    await expect(h.auth.refresh()).rejects.toThrow(/https/);
+    await expect(h.auth.getAccessToken()).rejects.toThrow(/https/);
+    expect(h.calls).toEqual([]);
+    expect(h.openBrowser).not.toHaveBeenCalled();
+    // The stored sign-in is not treated as revoked: fixing the URL recovers.
+    expect(h.secrets.get(SECRET_REFRESH_TOKEN)).toBe('refresh-1');
+  });
+
+  it('disconnect still clears the keychain but sends no token over http', async () => {
+    const h = insecure('http://javis.example.lan');
+    await h.auth.disconnect();
+    expect(h.calls).toEqual([]);
+    expect(h.secrets.get(SECRET_REFRESH_TOKEN)).toBeFalsy();
+  });
+
+  it('a server on this computer may use http', async () => {
+    const h = insecure('http://localhost:8000');
+    await expect(h.auth.refresh()).resolves.toBe(liveJwt);
+    expect(h.calls[0]!.url).toBe('http://localhost:8000/oauth/token');
+  });
+});
+
 describe('JavisOAuth.connect', () => {
   it('registers with the loopback URI it actually bound, then exchanges the code', async () => {
     const h = harness((req, n) => {
@@ -921,5 +985,278 @@ describe('JavisOAuth.onStatusChange', () => {
       throw new Error('bad UI listener');
     });
     await expect(h.auth.refresh()).resolves.toBe(liveJwt);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 0.2.0: the wiki:write step-up (spec 2026-09-24 §C.7; plan D-AUTH-1..5)
+// ---------------------------------------------------------------------------
+
+describe('step-up: authorize URL', () => {
+  const params = {
+    baseUrl: 'https://mcp.javis.is',
+    clientId: 'cid',
+    redirectUri: 'http://127.0.0.1:51234/callback',
+    codeChallenge: 'chal',
+    state: 'st',
+  };
+
+  it('carries the union scope and the /wiki resource when asked', () => {
+    const url = new URL(
+      buildAuthorizeUrl({ ...params, scope: OAUTH_SCOPE_WRITE, resource: 'https://mcp.javis.is/wiki' }),
+    );
+    expect(url.searchParams.get('scope')).toBe('mcp:read wiki:write');
+    expect(url.searchParams.get('resource')).toBe('https://mcp.javis.is/wiki');
+  });
+
+  it('is byte-identical to 0.1.x without them (D-AUTH-1)', () => {
+    expect(buildAuthorizeUrl(params)).toBe(
+      'https://mcp.javis.is/oauth/authorize?response_type=code&client_id=cid&redirect_uri=' +
+        'http%3A%2F%2F127.0.0.1%3A51234%2Fcallback&code_challenge=chal&code_challenge_method=S256' +
+        '&scope=mcp%3Aread&state=st',
+    );
+  });
+
+  it('wikiResource appends /wiki to the normalized origin', () => {
+    expect(wikiResource('https://mcp.javis.is/')).toBe('https://mcp.javis.is/wiki');
+    expect(wikiResource(' http://localhost:8000 ')).toBe('http://localhost:8000/wiki');
+  });
+});
+
+describe('step-up: connect and refresh', () => {
+  const writeJwt = jwt({ sub: 'u', exp: Math.floor(NOW / 1000) + 3600, scope: 'mcp:read wiki:write' });
+
+  it('sends scope and resource on authorize AND on the code exchange', async () => {
+    const h = harness((_req, n) =>
+      n === 1 ? { status: 201, text: JSON.stringify({ client_id: 'cid-1' }) } : tokenBody(writeJwt, 'r1'),
+    );
+    await h.auth.connect({ scope: OAUTH_SCOPE_WRITE, resource: 'https://mcp.javis.is/wiki' });
+    const url = new URL(h.openBrowser.mock.calls[0]![0] as string);
+    expect(url.searchParams.get('scope')).toBe('mcp:read wiki:write');
+    expect(url.searchParams.get('resource')).toBe('https://mcp.javis.is/wiki');
+    const form = new URLSearchParams(h.calls[1]!.body!);
+    expect(form.get('resource')).toBe('https://mcp.javis.is/wiki');
+    expect(h.auth.grantedScopes()).toEqual(['mcp:read', 'wiki:write']);
+  });
+
+  it('JavisOAuth.connect() with no options still sends no resource (the primitive; the plugin never calls it bare)', async () => {
+    const h = harness((_req, n) =>
+      n === 1 ? { status: 201, text: JSON.stringify({ client_id: 'cid-1' }) } : tokenBody(liveJwt, 'r1'),
+    );
+    await h.auth.connect();
+    const url = new URL(h.openBrowser.mock.calls[0]![0] as string);
+    expect(url.searchParams.get('scope')).toBe('mcp:read');
+    expect(url.searchParams.has('resource')).toBe(false);
+    for (const call of h.calls) expect(call.body ?? '').not.toContain('resource');
+  });
+
+  it('never sends resource or scope on a refresh', async () => {
+    const h = harness(() => tokenBody(writeJwt, 'r2'), {
+      client: { clientId: 'cid-1', redirectUri: 'http://127.0.0.1:51234/callback' },
+      secrets: { [SECRET_ACCESS_TOKEN]: deadJwt, [SECRET_REFRESH_TOKEN]: 'r1' },
+    });
+    await h.auth.getAccessToken();
+    const form = new URLSearchParams(h.calls[0]!.body!);
+    expect(form.get('grant_type')).toBe('refresh_token');
+    expect(form.has('resource')).toBe(false);
+    expect(form.has('scope')).toBe(false);
+  });
+});
+
+describe('grantedScopes', () => {
+  it('decodes the scope claim of the stored token', () => {
+    const h = harness(() => ({ status: 500, text: '' }), {
+      secrets: { [SECRET_ACCESS_TOKEN]: jwt({ scope: 'mcp:read wiki:write' }), [SECRET_REFRESH_TOKEN]: 'r' },
+    });
+    expect(h.auth.grantedScopes()).toEqual(['mcp:read', 'wiki:write']);
+  });
+
+  it('is null for an undecodable token, a token without scope, and no token', () => {
+    const opaque = harness(() => ({ status: 500, text: '' }), { secrets: { [SECRET_ACCESS_TOKEN]: 'opaque' } });
+    expect(opaque.auth.grantedScopes()).toBeNull();
+    const noScope = harness(() => ({ status: 500, text: '' }), { secrets: { [SECRET_ACCESS_TOKEN]: liveJwt } });
+    expect(noScope.auth.grantedScopes()).toBeNull();
+    const none = harness(() => ({ status: 500, text: '' }));
+    expect(none.auth.grantedScopes()).toBeNull();
+  });
+
+  it('decodeJwtClaims and scopesFromJwt are total', () => {
+    expect(decodeJwtClaims('a.b.c')).toBeNull();
+    expect(decodeJwtClaims(jwt({ x: 1 }))).toEqual({ x: 1 });
+    expect(scopesFromJwt(jwt({ scope: '  mcp:read  ' }))).toEqual(['mcp:read']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Review of 0.2.0: the /wiki resource on every connect, and the audience check
+// ---------------------------------------------------------------------------
+
+describe('connectOptionsFor (§C.3 resource always, §C.7 scope only with uploads)', () => {
+  it('a read-only connect asks for the /wiki resource and the default scope', () => {
+    expect(connectOptionsFor('https://mcp.javis.is/', false)).toEqual({ resource: 'https://mcp.javis.is/wiki' });
+  });
+
+  it('with an upload folder it adds the union scope', () => {
+    expect(connectOptionsFor('https://mcp.javis.is', true)).toEqual({
+      resource: 'https://mcp.javis.is/wiki',
+      scope: 'mcp:read wiki:write',
+    });
+  });
+
+  it('a read-only connect sends resource on authorize AND on the code exchange, scope=mcp:read', async () => {
+    const readJwt = jwt({ sub: 'u', exp: Math.floor(NOW / 1000) + 3600, scope: 'mcp:read', aud: 'https://mcp.javis.is/wiki' });
+    const h = harness((_req, n) =>
+      n === 1 ? { status: 201, text: JSON.stringify({ client_id: 'cid-1' }) } : tokenBody(readJwt, 'r1'),
+    );
+    await h.auth.connect(connectOptionsFor('https://mcp.javis.is', false));
+    const url = new URL(h.openBrowser.mock.calls[0]![0] as string);
+    expect(url.searchParams.get('scope')).toBe('mcp:read');
+    expect(url.searchParams.get('resource')).toBe('https://mcp.javis.is/wiki');
+    const form = new URLSearchParams(h.calls[1]!.body!);
+    expect(form.get('resource')).toBe('https://mcp.javis.is/wiki');
+    expect(h.auth.grantedAudiences()).toEqual(['https://mcp.javis.is/wiki']);
+  });
+});
+
+describe('audience', () => {
+  it('audiencesFromJwt reads a string or an array, else null', () => {
+    expect(audiencesFromJwt(jwt({ aud: 'https://mcp.javis.is/mcp' }))).toEqual(['https://mcp.javis.is/mcp']);
+    expect(audiencesFromJwt(jwt({ aud: ['a', 'b'] }))).toEqual(['a', 'b']);
+    expect(audiencesFromJwt(jwt({ aud: 3 }))).toBeNull();
+    expect(audiencesFromJwt(jwt({}))).toBeNull();
+    expect(audiencesFromJwt('opaque')).toBeNull();
+  });
+
+  it('isLegacyAudience: /mcp is legacy, /wiki (with or without a trailing slash) is not, unknown is not', () => {
+    const base = 'https://mcp.javis.is';
+    expect(isLegacyAudience(['https://mcp.javis.is/mcp'], base)).toBe(true);
+    expect(isLegacyAudience(['https://mcp.javis.is/wiki'], base)).toBe(false);
+    expect(isLegacyAudience(['https://mcp.javis.is/wiki/'], `${base}/`)).toBe(false);
+    expect(isLegacyAudience(null, base)).toBe(false);
+  });
+
+  it('lacksWriteGrant: missing scope, or a legacy audience, or neither', () => {
+    const base = 'https://mcp.javis.is';
+    const wiki = ['https://mcp.javis.is/wiki'];
+    expect(lacksWriteGrant(['mcp:read'], wiki, base)).toBe(true);
+    expect(lacksWriteGrant(['mcp:read', 'wiki:write'], ['https://mcp.javis.is/mcp'], base)).toBe(true);
+    expect(lacksWriteGrant(['mcp:read', 'wiki:write'], wiki, base)).toBe(false);
+    // Undecodable: try it, and let the server decide (D-RUN-3).
+    expect(lacksWriteGrant(null, null, base)).toBe(false);
+  });
+
+  it('grantedAudiences decodes the stored token, null without one', () => {
+    const h = harness(() => ({ status: 500, text: '' }), {
+      secrets: { [SECRET_ACCESS_TOKEN]: jwt({ aud: 'https://mcp.javis.is/mcp' }), [SECRET_REFRESH_TOKEN]: 'r' },
+    });
+    expect(h.auth.grantedAudiences()).toEqual(['https://mcp.javis.is/mcp']);
+    expect(harness(() => ({ status: 500, text: '' })).auth.grantedAudiences()).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tokens are bound to the origin that issued them (review)
+// ---------------------------------------------------------------------------
+
+describe('tokens only ever go to the origin that issued them (review)', () => {
+  const REAL = 'https://mcp.javis.is';
+  const EVIL = 'https://attacker.example';
+
+  function bound(initial: Record<string, string>, url = REAL) {
+    const calls: HttpRequestInit[] = [];
+    const secrets = new FakeSecrets();
+    for (const [k, v] of Object.entries(initial)) secrets.set(k, v);
+    const base = { value: url };
+    const auth = new JavisOAuth({
+      baseUrl: () => base.value,
+      secrets,
+      http: async (req) => {
+        calls.push(req);
+        if (req.url.endsWith('/oauth/revoke')) return { status: 200, text: '' };
+        return tokenBody(liveJwt, 'refresh-2');
+      },
+      getClient: () => ({ clientId: 'cid-1', redirectUri: 'http://127.0.0.1:51234/callback' }),
+      setClient: async () => {},
+      openBrowser: vi.fn(),
+      listen: async () => ({
+        port: 51234,
+        redirectUri: 'http://127.0.0.1:51234/callback',
+        waitForCode: async () => 'the-code',
+        close() {},
+      }),
+      now: () => NOW,
+    });
+    return { auth, calls, secrets, base };
+  }
+
+  it('connect stores the origin with the tokens; a changed URL gets neither token', async () => {
+    const h = bound({});
+    await h.auth.connect();
+    expect(h.secrets.get(SECRET_TOKEN_ORIGIN)).toBe(REAL);
+    h.calls.length = 0;
+
+    // A synced data.json now names another server.
+    h.base.value = EVIL;
+    const live = await h.auth.getAccessToken().catch((e: unknown) => e);
+    expect(live).toBeInstanceOf(OriginChangedError);
+    expect((live as OriginChangedError).needsUserAction).toBe(true);
+    await expect(h.auth.refresh()).rejects.toBeInstanceOf(OriginChangedError);
+    expect(h.calls).toEqual([]);
+    // Not a revocation: changing the URL back recovers without a sign-in.
+    expect(h.auth.status()).toBe('connected');
+    h.base.value = `${REAL}/`;
+    await expect(h.auth.getAccessToken()).resolves.toBe(liveJwt);
+  });
+
+  it('an expired token is not refreshed against a changed URL', async () => {
+    const h = bound({ [SECRET_ACCESS_TOKEN]: deadJwt, [SECRET_REFRESH_TOKEN]: 'refresh-1', [SECRET_TOKEN_ORIGIN]: REAL }, EVIL);
+    await expect(h.auth.getAccessToken()).rejects.toBeInstanceOf(OriginChangedError);
+    expect(h.calls).toEqual([]);
+    expect(h.secrets.get(SECRET_REFRESH_TOKEN)).toBe('refresh-1');
+  });
+
+  it('a refresh at the bound origin keeps the binding', async () => {
+    const h = bound({ [SECRET_ACCESS_TOKEN]: deadJwt, [SECRET_REFRESH_TOKEN]: 'refresh-1', [SECRET_TOKEN_ORIGIN]: REAL });
+    await expect(h.auth.getAccessToken()).resolves.toBe(liveJwt);
+    expect(h.calls[0]!.url).toBe(`${REAL}/oauth/token`);
+    expect(h.secrets.get(SECRET_TOKEN_ORIGIN)).toBe(REAL);
+  });
+
+  it('disconnect revokes at the issuing origin, never at a changed URL', async () => {
+    const h = bound({ [SECRET_ACCESS_TOKEN]: liveJwt, [SECRET_REFRESH_TOKEN]: 'refresh-1', [SECRET_TOKEN_ORIGIN]: REAL }, EVIL);
+    await h.auth.disconnect();
+    expect(h.calls.map((c) => c.url)).toEqual([`${REAL}/oauth/revoke`]);
+    expect(h.secrets.get(SECRET_TOKEN_ORIGIN)).toBeNull();
+  });
+
+  it('a token stored before the origin was is bound by its aud', async () => {
+    const legacy = jwt({ sub: 'user_1', aud: `${REAL}/mcp`, exp: Math.floor(NOW / 1000) + 3600 });
+    const evil = bound({ [SECRET_ACCESS_TOKEN]: legacy, [SECRET_REFRESH_TOKEN]: 'refresh-1' }, EVIL);
+    await expect(evil.auth.getAccessToken()).rejects.toBeInstanceOf(OriginChangedError);
+    const real = bound({ [SECRET_ACCESS_TOKEN]: legacy, [SECRET_REFRESH_TOKEN]: 'refresh-1' });
+    await expect(real.auth.getAccessToken()).resolves.toBe(legacy);
+  });
+
+  it('an opaque token with no stored origin is bound to the URL on first use', async () => {
+    const h = bound({ [SECRET_ACCESS_TOKEN]: 'opaque-token', [SECRET_REFRESH_TOKEN]: 'refresh-1' });
+    await expect(h.auth.getAccessToken()).resolves.toBe('opaque-token');
+    expect(h.secrets.get(SECRET_TOKEN_ORIGIN)).toBe(REAL);
+    h.base.value = EVIL;
+    await expect(h.auth.getAccessToken()).rejects.toBeInstanceOf(OriginChangedError);
+  });
+
+  it('accountKey names the server and the subject, and nothing when not connected', async () => {
+    const h = bound({ [SECRET_ACCESS_TOKEN]: liveJwt, [SECRET_REFRESH_TOKEN]: 'refresh-1', [SECRET_TOKEN_ORIGIN]: `${REAL}/` });
+    expect(h.auth.accountKey()).toBe(`${REAL} user_1`);
+    expect(bound({}).auth.accountKey()).toBeNull();
+    expect(bound({ [SECRET_ACCESS_TOKEN]: 'opaque', [SECRET_REFRESH_TOKEN]: 'r' }).auth.accountKey()).toBeNull();
+  });
+
+  it('origin helpers compare the way the server URL is written', () => {
+    expect(canonicalOrigin('HTTPS://MCP.Javis.is:443/')).toBe(REAL);
+    expect(canonicalOrigin('not a url')).toBeNull();
+    expect(originFromAudiences([`${REAL}/wiki`])).toBe(REAL);
+    expect(originFromAudiences(['https://elsewhere.example/other'])).toBeNull();
+    expect(originFromAudiences(null)).toBeNull();
   });
 });

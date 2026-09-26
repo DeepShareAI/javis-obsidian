@@ -278,3 +278,87 @@ describe('maxRevision', () => {
     expect(maxRevision([note('a.md', beyond)], now)).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// 0.2.0: the upload half's vault helpers (spec 2026-09-24 §F.2)
+// ---------------------------------------------------------------------------
+
+import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { join } from 'node:path';
+
+import { cachedSourceIdHint, notesUnder } from '../src/shell/vault';
+
+describe('notesUnder', () => {
+  it('keeps markdown under a selected folder, by path segment', () => {
+    expect(
+      notesUnder(
+        ['Journal/a.md', 'Journal/sub/b.md', 'Journal2/c.md', 'Journal/d.canvas', 'root.md', 'Inbox/e.MD'],
+        ['Journal', 'Inbox'],
+      ),
+    ).toEqual(['Journal/a.md', 'Journal/sub/b.md']);
+  });
+
+  it('keeps only a lowercase .md extension, as the server does (contract review)', () => {
+    // The server answers 400 "vault_path must be a .md note" for `.MD`/`.Md`;
+    // enumerating one would stamp it on disk and then fail its PUT every run.
+    expect(notesUnder(['Inbox/e.MD', 'Inbox/f.Md', 'Inbox/g.md'], ['Inbox'])).toEqual(['Inbox/g.md']);
+  });
+});
+
+describe('cachedSourceIdHint', () => {
+  it('returns a lowercased uuid or null', () => {
+    const id = '3f2b8c1e-9a4d-4e6f-8b7a-1c2d3e4f5a6b';
+    expect(cachedSourceIdHint({ javis_source_id: id.toUpperCase() })).toBe(id);
+    expect(cachedSourceIdHint({ javis_source_id: 'nope' })).toBeNull();
+    expect(cachedSourceIdHint({ javis_source_id: 42 })).toBeNull();
+    expect(cachedSourceIdHint(undefined)).toBeNull();
+  });
+});
+
+describe('the plugin never deletes or trashes a vault file (§F.2)', () => {
+  function sources(dir: string): string[] {
+    return readdirSync(dir).flatMap((name) => {
+      const path = join(dir, name);
+      return statSync(path).isDirectory() ? sources(path) : path.endsWith('.ts') ? [path] : [];
+    });
+  }
+
+  // Every Obsidian route to removing a file, not just `vault.delete`/`trash`
+  // (review): `fileManager.trashFile` is the API Obsidian recommends, and the
+  // adapter's `remove`/`rmdir`/`trashSystem`/`trashLocal` are the usual way
+  // around the vault. On a vault, adapter or fileManager receiver (optional
+  // chaining included), any of those names; the trash-only names anywhere,
+  // since nothing else in this codebase is called that.
+  const REMOVAL =
+    /\b(vault|adapter|fileManager)\s*\??\.\s*(delete|trash|trashFile|remove|rmdir|trashSystem|trashLocal)\s*\(|\.\s*(trash|trashFile|trashSystem|trashLocal|rmdir)\s*\(/;
+
+  it('the pattern catches every removal API it is meant to', () => {
+    for (const line of [
+      'await this.app.vault.delete(file);',
+      'await app.vault.trash(file, true);',
+      'await this.#app.fileManager.trashFile(file);',
+      'await this.app.vault.adapter.remove(path);',
+      'await adapter.rmdir(dir, true);',
+      'await this.app.vault.adapter.trashSystem(path);',
+      'await vault.adapter?.trashLocal(path);',
+      'await (x as any).trash(file);',
+    ]) {
+      expect(REMOVAL.test(line), line).toBe(true);
+    }
+    for (const line of ['this.opts.secrets.delete(id);', 'owed.delete(id);', 'deps.api.delete(action.sourceId)']) {
+      expect(REMOVAL.test(line), line).toBe(false);
+    }
+  });
+
+  it('no source file calls a vault, adapter or fileManager removal API', () => {
+    // Code lines only: the prohibition is quoted in several doc comments.
+    const offenders = sources(join(__dirname, '..', 'src')).flatMap((file) =>
+      readFileSync(file, 'utf8')
+        .split('\n')
+        .filter((line) => !/^\s*(\*|\/\/|\/\*)/.test(line))
+        .filter((line) => REMOVAL.test(line))
+        .map((line) => `${file}: ${line.trim()}`),
+    );
+    expect(offenders).toEqual([]);
+  });
+});

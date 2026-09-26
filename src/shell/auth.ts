@@ -48,27 +48,44 @@ import type { Socket } from 'node:net';
 import type {
   AuthStatus,
   BrowserOpener,
+  ConnectOptions,
   JavisAuth,
   OAuthClientRegistration,
   SecretStore,
 } from './contracts';
-import { SECRET_ACCESS_TOKEN, SECRET_REFRESH_TOKEN } from './contracts';
+import { SECRET_ACCESS_TOKEN, SECRET_REFRESH_TOKEN, SECRET_TOKEN_ORIGIN } from './contracts';
 import {
   AuthCancelledError,
   AuthRequiredError,
   AuthRevokedError,
   HttpError,
   NetworkError,
+  OriginChangedError,
   ProtocolError,
   RateLimitedError,
 } from './errors';
+import { secureOrigin } from './origin';
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-/** The only scope the server advertises or mints (javis_mcp/oauth/metadata.py:28). */
+/**
+ * The read scope, and still the default: a connect with no upload folder
+ * selected asks for exactly this, as 0.1.x did (javis_mcp/oauth/metadata.py:28).
+ */
 export const OAUTH_SCOPE = 'mcp:read';
+
+/** The scope the upload routes require (spec 2026-09-24 §C.4, §E). */
+export const WIKI_WRITE_SCOPE = 'wiki:write';
+
+/**
+ * What a step-up asks for: the UNION, not just the new scope. `wiki:write`
+ * does not imply read (§C.4), and the MCP step-up flow re-requests everything
+ * the client needs, so asking for `wiki:write` alone would trade the download's
+ * grant for the upload's.
+ */
+export const OAUTH_SCOPE_WRITE = `${OAUTH_SCOPE} ${WIKI_WRITE_SCOPE}`;
 
 /** Shown on the server's client row; purely cosmetic. Truncated to 120 chars. */
 export const CLIENT_NAME = 'Obsidian — Javis Wiki Sync';
@@ -199,6 +216,13 @@ export interface AuthorizeUrlParams {
   codeChallenge: string;
   state: string;
   scope?: string;
+  /**
+   * RFC 8707 resource indicator. Omitted entirely when absent, which yields
+   * 0.1.x's URL byte for byte. The plugin itself always passes one since
+   * review of 0.2.0 (`connectOptionsFor`); the omission is kept for callers
+   * that ask for nothing.
+   */
+  resource?: string;
 }
 
 /**
@@ -223,6 +247,7 @@ export function buildAuthorizeUrl(params: AuthorizeUrlParams): string {
     scope: params.scope ?? OAUTH_SCOPE,
     state: params.state,
   });
+  if (params.resource !== undefined) query.set('resource', params.resource);
   return `${normalizeBaseUrl(params.baseUrl)}/oauth/authorize?${query.toString()}`;
 }
 
@@ -304,6 +329,149 @@ export function decodeJwtExpiry(token: string): number | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * A JWT's payload claims, or null when the token is not a decodable JWT.
+ * Signature is NOT checked: the server checks it; this only reads what the
+ * token says it was granted, to decide whether to try an upload at all.
+ */
+export function decodeJwtClaims(token: string): Record<string, unknown> | null {
+  const payload = token.split('.')[1];
+  if (!payload) return null;
+  const json = base64UrlDecode(payload);
+  if (json === null) return null;
+  try {
+    const claims: unknown = JSON.parse(json);
+    return typeof claims === 'object' && claims !== null && !Array.isArray(claims)
+      ? (claims as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The space-separated `scope` claim as a list; null when absent or undecodable. */
+export function scopesFromJwt(token: string): string[] | null {
+  const scope = decodeJwtClaims(token)?.['scope'];
+  if (typeof scope !== 'string') return null;
+  return scope.split(' ').filter((s) => s !== '');
+}
+
+/**
+ * The resource the upload routes live under (§C.3): `<origin>/wiki`. For the
+ * default origin that is `https://mcp.javis.is/wiki`.
+ */
+export function wikiResource(baseUrl: string): string {
+  return `${normalizeBaseUrl(baseUrl)}/wiki`;
+}
+
+/**
+ * A server URL in the one spelling two URLs are compared in: scheme and host
+ * lowercased by `URL`, the default port dropped, trailing slashes trimmed.
+ * Null when it does not parse.
+ */
+export function canonicalOrigin(baseUrl: string): string | null {
+  try {
+    const url = new URL(normalizeBaseUrl(baseUrl));
+    return `${url.origin}${url.pathname.replace(/\/+$/, '')}`;
+  } catch {
+    return null;
+  }
+}
+
+/** True when two server URLs name the same server (`canonicalOrigin`). */
+export function sameOrigin(a: string, b: string): boolean {
+  const ca = canonicalOrigin(a);
+  return ca !== null && ca === canonicalOrigin(b);
+}
+
+/**
+ * The server a token was minted for, read from its `aud`: the resource minus
+ * its `/wiki` or `/mcp` suffix. Only for tokens stored before the origin was
+ * (see `SECRET_TOKEN_ORIGIN`); null when the token says nothing usable.
+ */
+export function originFromAudiences(audiences: readonly string[] | null): string | null {
+  for (const aud of audiences ?? []) {
+    const trimmed = normalizeBaseUrl(aud).replace(/\/(wiki|mcp)$/, '');
+    if (trimmed !== normalizeBaseUrl(aud) && canonicalOrigin(trimmed) !== null) return trimmed;
+  }
+  return null;
+}
+
+/**
+ * The `aud` claim as a list (RFC 7519 §4.1.3 allows a string or an array);
+ * null when absent or undecodable. Read for the same reason `scopesFromJwt`
+ * is: to decide what to ask for, never to trust — the server checks it.
+ */
+export function audiencesFromJwt(token: string): string[] | null {
+  const aud = decodeJwtClaims(token)?.['aud'];
+  if (typeof aud === 'string') return [aud];
+  if (Array.isArray(aud) && aud.every((a): a is string => typeof a === 'string')) return aud;
+  return null;
+}
+
+/** The server's comparison form (javis_mcp/resources.py `canonical`): one trailing `/` dropped. */
+function canonicalResource(resource: string): string {
+  return normalizeBaseUrl(resource);
+}
+
+/**
+ * True when the token's audience is decodable and is NOT this origin's `/wiki`
+ * resource: a grant minted before 0.2.0 (or by a 0.2.0 build that still sent
+ * no `resource`), whose `aud` is the MCP resource. The server accepts that
+ * audience on `/wiki/export` for one release only (§C.3), and never on the
+ * upload routes, and a refresh can confirm a grant's audience but never switch
+ * it (javis_mcp/oauth/token.py `_resource_param_matches`) — so only a new
+ * authorization moves such a device. Undecodable → false: try it, and let the
+ * server decide.
+ */
+export function isLegacyAudience(audiences: readonly string[] | null, baseUrl: string): boolean {
+  if (audiences === null) return false;
+  const wiki = canonicalResource(wikiResource(baseUrl));
+  return !audiences.some((aud) => canonicalResource(aud) === wiki);
+}
+
+/**
+ * True when the stored token visibly cannot write (plan D-RUN-3, widened): its
+ * decodable `scope` lacks `wiki:write`, or its decodable `aud` is not the
+ * `/wiki` resource. The second half matters because the upload routes accept
+ * the `/wiki` audience only: a legacy-audience token fails authentication
+ * there with a 401, not the 403 `insufficient_scope` the step-up listens
+ * for, so without this check such a token reads as "expired even after a
+ * refresh" and the step-up is never reached.
+ */
+export function lacksWriteGrant(
+  scopes: readonly string[] | null,
+  audiences: readonly string[] | null,
+  baseUrl: string,
+): boolean {
+  if (scopes !== null && !scopes.includes(WIKI_WRITE_SCOPE)) return true;
+  return isLegacyAudience(audiences, baseUrl);
+}
+
+/**
+ * What `connect` should ask for (§C.3, §C.7).
+ *
+ * The `/wiki` resource ALWAYS: §C.3 says the plugin requests it, and the old
+ * `/mcp` audience is accepted on `/wiki/export` for one release only, after
+ * which a read-only device still holding an `/mcp` grant would stop syncing
+ * with no code path in the plugin to move it (a refresh keeps the audience).
+ * `mcp:read` alone is valid on the `/wiki` resource, and a server from before
+ * the resource split ignores the parameter (§C.3 "it ignores it today"), so
+ * sending it costs nothing. This departs from the plan's D-AUTH-1, which kept
+ * read-only connects byte-identical to 0.1.x and deferred the resource to
+ * 0.3.0; review found that leaves every read-only 0.2.0 install on the
+ * audience the server has scheduled for removal.
+ *
+ * The union scope only once an upload folder is selected (§C.7): a user who
+ * never uploads never sees a consent screen asking to store their notes.
+ */
+export function connectOptionsFor(baseUrl: string, uploads: boolean): ConnectOptions {
+  return {
+    resource: wikiResource(baseUrl),
+    ...(uploads ? { scope: OAUTH_SCOPE_WRITE } : {}),
+  };
 }
 
 /** Expired, or close enough to expiry that a request would race the clock. */
@@ -570,7 +738,46 @@ export class JavisOAuth implements JavisAuth {
 
   // -- §D steps 1-5: connect ------------------------------------------------
 
-  async connect(): Promise<void> {
+  /**
+   * The scopes the stored access token carries (plan D-AUTH-2). Read from the
+   * token rather than persisted: the token already says, it is per-device as a
+   * grant is, and a refresh keeps the granted scope (§C.7), so the claim stays
+   * true across refreshes.
+   */
+  grantedScopes(): string[] | null {
+    const access = this.readSecret(SECRET_ACCESS_TOKEN);
+    return access ? scopesFromJwt(access) : null;
+  }
+
+  /** The stored access token's `aud`, as `grantedScopes` reads `scope`; null when unknown. */
+  grantedAudiences(): string[] | null {
+    const access = this.readSecret(SECRET_ACCESS_TOKEN);
+    return access ? audiencesFromJwt(access) : null;
+  }
+
+  /**
+   * Which account and server this device is signed in to, as one string
+   * (`<origin> <sub>`); null when not connected or the token has no readable
+   * `sub`. Read by the upload half to tell whether its memory describes rows
+   * in THIS account (review). Not a credential, and never checked for
+   * authenticity: the server checks the token, this only notices a switch.
+   */
+  accountKey(): string | null {
+    const access = this.readSecret(SECRET_ACCESS_TOKEN);
+    if (!access || !this.readSecret(SECRET_REFRESH_TOKEN)) return null;
+    const sub = decodeJwtClaims(access)?.['sub'];
+    if (typeof sub !== 'string' || sub === '') return null;
+    const origin = this.readSecret(SECRET_TOKEN_ORIGIN) ?? originFromAudiences(audiencesFromJwt(access));
+    const canonical = origin === null ? null : canonicalOrigin(origin);
+    return canonical === null ? null : `${canonical} ${sub}`;
+  }
+
+  async connect(options: ConnectOptions = {}): Promise<void> {
+    // Before binding a port or opening a browser: a refresh token (and, with
+    // uploads on, a `wiki:write` grant) must never be minted over cleartext
+    // to another machine (origin.ts, review). Snapshotted: the tokens this
+    // connect stores are bound to this origin and no other.
+    const origin = this.secureBaseUrl();
     const cached = this.opts.getClient();
     const cachedPort = cached ? portOf(cached.redirectUri) : undefined;
     const listen = this.opts.listen ?? startLoopbackListener;
@@ -590,11 +797,13 @@ export class JavisOAuth implements JavisAuth {
       const state = randomToken();
 
       const url = buildAuthorizeUrl({
-        baseUrl: this.baseUrl(),
+        baseUrl: this.secureBaseUrl(),
         clientId: client.clientId,
         redirectUri: client.redirectUri,
         codeChallenge: challenge,
         state,
+        ...(options.scope === undefined ? {} : { scope: options.scope }),
+        ...(options.resource === undefined ? {} : { resource: options.resource }),
       });
       await this.openBrowser(url);
 
@@ -608,6 +817,7 @@ export class JavisOAuth implements JavisAuth {
         verifier,
         clientId: client.clientId,
         redirectUri: client.redirectUri,
+        resource: options.resource,
       });
 
       // Persist the registration only once it has demonstrably produced tokens,
@@ -616,7 +826,7 @@ export class JavisOAuth implements JavisAuth {
       if (!cached || cached.clientId !== client.clientId || cached.redirectUri !== client.redirectUri) {
         await this.opts.setClient(client);
       }
-      this.storeTokens(tokens);
+      this.storeTokens(tokens, origin);
       this.revoked = false;
       this.emit();
     } finally {
@@ -656,6 +866,8 @@ export class JavisOAuth implements JavisAuth {
     verifier: string;
     clientId: string;
     redirectUri: string;
+    /** RFC 8707 §2.2: the same resource again on the code exchange. */
+    resource?: string;
   }): Promise<TokenResponse> {
     const body = await this.postForm('/oauth/token', {
       grant_type: 'authorization_code',
@@ -663,6 +875,7 @@ export class JavisOAuth implements JavisAuth {
       code_verifier: args.verifier,
       redirect_uri: args.redirectUri,
       client_id: args.clientId,
+      ...(args.resource === undefined ? {} : { resource: args.resource }),
     });
     return readTokens(body);
   }
@@ -671,7 +884,12 @@ export class JavisOAuth implements JavisAuth {
 
   async getAccessToken(): Promise<string> {
     const access = this.readSecret(SECRET_ACCESS_TOKEN);
-    if (access && !isExpired(decodeJwtExpiry(access), this.now())) return access;
+    if (access) {
+      // Every caller sends the result to the CURRENT server URL, so it must
+      // be the one this token was issued by (review; `boundOrigin`).
+      this.boundOrigin();
+      if (!isExpired(decodeJwtExpiry(access), this.now())) return access;
+    }
     return this.refresh();
   }
 
@@ -691,8 +909,15 @@ export class JavisOAuth implements JavisAuth {
     const generation = this.generation;
     // Snapshotted, not re-read: `baseUrl` is a live function of the settings,
     // and the origin that issues a token is the only one allowed to be shown it.
-    const origin = this.baseUrl();
+    // Also the https check (origin.ts, review): the refresh token is never
+    // presented over cleartext to another machine. A plain Error, not an
+    // auth error, so the stored sign-in survives until the URL is fixed.
+    //
+    // And the origin the refresh token was issued by (review): a `baseUrl`
+    // that another device, a collaborator or a vault template wrote into the
+    // synced `data.json` must not receive it. `boundOrigin` refuses first.
     const refreshToken = this.readSecret(SECRET_REFRESH_TOKEN);
+    const origin = refreshToken ? this.boundOrigin() : this.secureBaseUrl();
     const client = this.opts.getClient();
 
     if (!refreshToken || !client) {
@@ -747,7 +972,7 @@ export class JavisOAuth implements JavisAuth {
       throw new AuthRequiredError('Connect your Javis account in the plugin settings.');
     }
 
-    this.storeTokens(tokens);
+    this.storeTokens(tokens, origin);
     this.revoked = false;
     this.emit();
     return tokens.accessToken;
@@ -759,6 +984,11 @@ export class JavisOAuth implements JavisAuth {
     this.generation += 1;
 
     const refreshToken = this.readSecret(SECRET_REFRESH_TOKEN);
+    // Revoke at the origin that issued the token, never at whatever the URL
+    // says now (review): a changed `baseUrl` must not be handed the refresh
+    // token by the very button meant to get rid of it. Unknown → the URL, as
+    // before (a token from before the origin was stored).
+    const revokeAt = this.storedOrigin() ?? this.baseUrl();
     this.clearSecrets();
     this.revoked = false;
     try {
@@ -767,7 +997,7 @@ export class JavisOAuth implements JavisAuth {
       // Settings write failed; the tokens are gone either way, which is what
       // "disconnect" has to guarantee. Contract says this never throws.
     }
-    if (refreshToken) await this.revokeToken(refreshToken, this.baseUrl());
+    if (refreshToken) await this.revokeToken(refreshToken, revokeAt);
     this.emit();
   }
 
@@ -779,6 +1009,13 @@ export class JavisOAuth implements JavisAuth {
    * offline disconnect still clears the keychain and returns.
    */
   private async revokeToken(token: string, origin: string): Promise<void> {
+    try {
+      // Revoking over cleartext would hand the token to anyone on the path;
+      // an insecure origin just lets it live out its TTL (origin.ts, review).
+      secureOrigin(origin);
+    } catch {
+      return;
+    }
     try {
       await this.opts.http({
         url: `${origin}/oauth/revoke`,
@@ -796,6 +1033,52 @@ export class JavisOAuth implements JavisAuth {
   private baseUrl(): string {
     const raw = typeof this.opts.baseUrl === 'function' ? this.opts.baseUrl() : this.opts.baseUrl;
     return normalizeBaseUrl(raw);
+  }
+
+  /** `baseUrl()`, refused unless https or loopback http (origin.ts). Throws. */
+  private secureBaseUrl(): string {
+    return secureOrigin(this.baseUrl());
+  }
+
+  /**
+   * The origin the stored tokens were issued by: the one `connect` or the
+   * last refresh stored, else — for a token stored before 0.2.0 kept one —
+   * the server its `aud` names. Null when neither says.
+   */
+  private storedOrigin(): string | null {
+    const stored = this.readSecret(SECRET_TOKEN_ORIGIN);
+    if (stored !== null) return stored;
+    const access = this.readSecret(SECRET_ACCESS_TOKEN);
+    return access ? originFromAudiences(audiencesFromJwt(access)) : null;
+  }
+
+  /**
+   * `secureBaseUrl()`, but only when it is the origin the stored tokens were
+   * issued by; throws `OriginChangedError` otherwise (review). The tokens are
+   * this device's (keychain) and the URL is the vault's (`data.json`, which
+   * syncs): before this, a `baseUrl` changed anywhere but the settings text
+   * field — which disconnects — received the bearer on the next request and
+   * the refresh token on the first 401. Since 0.2.0 that bearer can delete
+   * every uploaded source.
+   *
+   * A token with no stored origin and no readable `aud` (only an opaque
+   * token from an old build) is bound to the current URL on first use: there
+   * is nothing to compare against, and refusing would sign out every such
+   * device for a threat the token's own audience check already limits.
+   */
+  private boundOrigin(): string {
+    const current = this.secureBaseUrl();
+    const bound = this.storedOrigin();
+    if (bound === null) {
+      try {
+        this.opts.secrets.set(SECRET_TOKEN_ORIGIN, current);
+      } catch {
+        // An unwritable keychain: the next call binds again.
+      }
+      return current;
+    }
+    if (!sameOrigin(bound, current)) throw new OriginChangedError(bound, current);
+    return current;
   }
 
   private now(): number {
@@ -820,13 +1103,16 @@ export class JavisOAuth implements JavisAuth {
    * order would leave a usable access token with no way to renew it, and the
    * old refresh token is already dead server-side.
    */
-  private storeTokens(tokens: TokenResponse): void {
+  private storeTokens(tokens: TokenResponse, origin: string): void {
+    // The origin before either token: a token must never be in the keychain
+    // bound to the wrong server, even between two writes.
+    this.opts.secrets.set(SECRET_TOKEN_ORIGIN, origin);
     this.opts.secrets.set(SECRET_REFRESH_TOKEN, tokens.refreshToken);
     this.opts.secrets.set(SECRET_ACCESS_TOKEN, tokens.accessToken);
   }
 
   private clearSecrets(): void {
-    for (const id of [SECRET_ACCESS_TOKEN, SECRET_REFRESH_TOKEN]) {
+    for (const id of [SECRET_ACCESS_TOKEN, SECRET_REFRESH_TOKEN, SECRET_TOKEN_ORIGIN]) {
       try {
         this.opts.secrets.delete(id);
       } catch {
@@ -837,7 +1123,7 @@ export class JavisOAuth implements JavisAuth {
 
   private async postJson(path: string, payload: unknown): Promise<Record<string, unknown>> {
     return this.send({
-      url: `${this.baseUrl()}${path}`,
+      url: `${this.secureBaseUrl()}${path}`,
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body: JSON.stringify(payload),
@@ -851,7 +1137,7 @@ export class JavisOAuth implements JavisAuth {
     // application/x-www-form-urlencoded, not JSON: the token endpoint reads
     // `await request.form()` (javis_mcp/oauth/token.py:30).
     return this.send({
-      url: `${this.baseUrl()}${path}`,
+      url: `${this.secureBaseUrl()}${path}`,
       method: 'POST',
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',

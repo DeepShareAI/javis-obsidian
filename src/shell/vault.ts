@@ -43,7 +43,9 @@ import type { App, SecretStorage, TFile } from 'obsidian';
 
 import { JAVIS_REV } from '../core/types';
 import { TYPE_TO_PLURAL } from '../core/slug';
-import type { Frontmatter, SecretStore, VaultAdapter, VaultNote } from './contracts';
+import { isUnderFolder } from '../core/folders';
+import { isUuid, SOURCE_ID_KEY } from '../core/note-text';
+import type { Frontmatter, SecretStore, UploadVault, VaultAdapter, VaultNote } from './contracts';
 import { VaultWriteError } from './errors';
 
 // ---------------------------------------------------------------------------
@@ -261,6 +263,34 @@ export function maxRevision(
   return best;
 }
 
+/**
+ * The markdown paths under any of `folders` (spec 2026-09-24 §F.2 enumeration).
+ * A path-segment prefix test, so `Journal2/` is not under `Journal`.
+ *
+ * The extension test is case-sensitive, matching the server's
+ * `_check_vault_path` (`norm.endswith('.md')`). Whether Obsidian lists a
+ * `.MD` file as markdown depends on the build; if it does, keeping it here
+ * would stamp the file and then fail its PUT with a 400 on every run. Such a
+ * file is simply not a note to the upload, like a `.canvas` (contract review).
+ */
+export function notesUnder(paths: readonly string[], folders: readonly string[]): string[] {
+  return paths.filter(
+    (path) => path.endsWith('.md') && folders.some((folder) => isUnderFolder(path, folder)),
+  );
+}
+
+/**
+ * A metadata-cache `javis_source_id` as a presence hint (plan D-PLAN-3): a
+ * lowercased uuid, or null for anything else. Only ever used to PREVENT a
+ * delete for a note whose file could not be read.
+ */
+export function cachedSourceIdHint(frontmatter: Record<string, unknown> | undefined): string | null {
+  const value = frontmatter?.[SOURCE_ID_KEY];
+  if (typeof value !== 'string') return null;
+  const id = value.trim().toLowerCase();
+  return isUuid(id) ? id : null;
+}
+
 // ---------------------------------------------------------------------------
 // The adapter
 // ---------------------------------------------------------------------------
@@ -281,7 +311,7 @@ export interface ObsidianVaultAdapterOptions {
  * tested without a runtime has been lifted out into the pure helpers above,
  * which is the reason this class is as thin as it is.
  */
-export class ObsidianVaultAdapter implements VaultAdapter {
+export class ObsidianVaultAdapter implements VaultAdapter, UploadVault {
   /**
    * A real private field, not a `private` modifier.
    *
@@ -446,6 +476,52 @@ export class ObsidianVaultAdapter implements VaultAdapter {
         frontmatter: frontmatter === undefined ? null : { ...frontmatter },
       };
     });
+  }
+
+  // -- the upload half (spec 2026-09-24 §F.2) ------------------------------
+  //
+  // Still no delete and no trash. The upload never removes a vault file: a
+  // source leaves the wiki by a DELETE to the server, never by touching disk.
+
+  /** The markdown files under the selected folders, with a cached-id hint. Reads no file. */
+  async listNotesIn(folders: readonly string[]): Promise<readonly { path: string; cachedSourceId: string | null }[]> {
+    const cache = this.#app.metadataCache;
+    const byPath = new Map(this.#app.vault.getMarkdownFiles().map((file) => [file.path, file] as const));
+    return notesUnder([...byPath.keys()], folders).map((path) => ({
+      path,
+      cachedSourceId: cachedSourceIdHint(cache.getFileCache(byPath.get(path)!)?.frontmatter),
+    }));
+  }
+
+  /**
+   * `vault.read`, not `cachedRead` (§F.2): the cache can hold a stale copy of a
+   * file changed outside Obsidian, and an upload of stale text is an edit the
+   * user did not make. Deliberately separate from `read()`, whose documented
+   * `cachedRead` the download depends on.
+   */
+  async readFresh(path: string): Promise<string> {
+    const file = this.#find(path);
+    if (file === null) throw new VaultWriteError(path, `No note at ${path}`);
+    return this.#app.vault.read(file);
+  }
+
+  /** `vault.process`, returning the text it wrote (plan D-STAMP-3). */
+  async processText(path: string, transform: (content: string) => string): Promise<string> {
+    const file = this.#require(path);
+    try {
+      return await this.#app.vault.process(file, transform);
+    } catch (err) {
+      throw new VaultWriteError(path, `Could not update ${path}: ${describeError(err)}`, { cause: err });
+    }
+  }
+
+  configDir(): string {
+    return this.#app.vault.configDir;
+  }
+
+  /** Every folder path in the vault, for the settings folder picker. */
+  folderPaths(): string[] {
+    return this.#app.vault.getAllFolders(false).map((folder) => folder.path);
   }
 
   // -- internals ------------------------------------------------------------

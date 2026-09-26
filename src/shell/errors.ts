@@ -27,6 +27,9 @@ export type JavisErrorCode =
   | 'rate-limited'
   | 'protocol'
   | 'vault-write'
+  | 'insufficient-scope'
+  | 'origin-changed'
+  | 'account-changed'
   | 'cancelled';
 
 /**
@@ -126,6 +129,82 @@ export class AuthRevokedError extends JavisError {
 export class AuthCancelledError extends JavisError {
   readonly code = 'auth-cancelled' as const;
   readonly retryable = false;
+}
+
+/**
+ * The server answered `403` with `WWW-Authenticate: Bearer
+ * error="insufficient_scope"` (RFC 6750 §3.1; spec 2026-09-24 §C.4): the token
+ * is valid but was not granted `wiki:write`.
+ *
+ * Not auth-fatal in the `isAuthFatal` sense — the read-only connection still
+ * works, and the download half must keep running — but the user must act:
+ * §C.7 re-authorizes once with the union scope and then "stops and says so".
+ * This is the "says so".
+ */
+export class InsufficientScopeError extends JavisError {
+  readonly code = 'insufficient-scope' as const;
+  readonly retryable = false;
+  override readonly needsUserAction = true;
+
+  constructor(
+    message = 'Javis did not grant permission to write to your wiki. Reconnect in the plugin settings and allow uploads.',
+    options?: { cause?: unknown },
+  ) {
+    super(message, options);
+  }
+}
+
+/**
+ * The server URL in the settings is not the origin this device's tokens were
+ * issued by (review). `data.json` holds the URL and it syncs with the vault
+ * (Obsidian Sync settings, a git-shared vault, a vault template), so another
+ * party can change it; the tokens live in this device's keychain and must
+ * only ever be shown to the origin that minted them. Since 0.2.0 the bearer
+ * can overwrite and delete every uploaded source, and the refresh token mints
+ * more of them.
+ *
+ * Not auth-fatal and not a revocation: the secrets are kept, so changing the
+ * URL back recovers without a sign-in. Reconnecting binds the tokens to the
+ * new URL, which is the user's explicit choice.
+ */
+export class OriginChangedError extends JavisError {
+  readonly code = 'origin-changed' as const;
+  readonly retryable = false;
+  override readonly needsUserAction = true;
+
+  constructor(
+    readonly boundOrigin: string,
+    readonly currentOrigin: string,
+    options?: { cause?: unknown },
+  ) {
+    super(
+      `This device signed in to ${boundOrigin}, but the server URL is now ${currentOrigin}. ` +
+        'Change the URL back, or reconnect in the plugin settings to sign in to the new server.',
+      options,
+    );
+  }
+}
+
+/**
+ * This device is signed in to a different Javis account (or server) than the
+ * one this vault's uploads belong to (review). Upload memory, the stamped ids
+ * and the held changes all describe rows in THAT account; carrying on would
+ * send every selected note's full text into the new account and strand the
+ * originals where no plugin path can remove them. Uploads stop until the user
+ * signs back in to that account or explicitly starts uploads over.
+ */
+export class AccountChangedError extends JavisError {
+  readonly code = 'account-changed' as const;
+  readonly retryable = false;
+  override readonly needsUserAction = true;
+
+  constructor(
+    message = 'This device is signed in to a different Javis account than the one this vault uploaded to. ' +
+      'Uploads are paused: sign back in to that account, or use "Start uploads over" in the plugin settings.',
+    options?: { cause?: unknown },
+  ) {
+    super(message, options);
+  }
 }
 
 // ---------------------------------------------------------------------------

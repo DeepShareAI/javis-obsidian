@@ -94,6 +94,13 @@ describe('clampLimit', () => {
 // ---------------------------------------------------------------------------
 
 describe('buildExportUrl', () => {
+  it('refuses cleartext http except to this machine: the bearer on it can write (review)', () => {
+    expect(() => buildExportUrl('http://javis.example.lan')).toThrow(/https/);
+    expect(() => buildExportUrl('http://10.0.0.5:8000')).toThrow(/https/);
+    expect(buildExportUrl('http://localhost:8000')).toContain('http://localhost:8000/wiki/export');
+    expect(buildExportUrl('http://127.0.0.1:8000')).toContain('http://127.0.0.1:8000/wiki/export');
+  });
+
   it('hits /wiki/export with no /api prefix and the default limit', () => {
     expect(buildExportUrl(BASE)).toBe(`${BASE}/wiki/export?limit=${DEFAULT_PAGE_LIMIT}`);
   });

@@ -1,3 +1,217 @@
+# Javis Wiki Sync 0.2.0 — the upload half
+
+Uploads the user's own notes, from folders they choose, into the Javis wiki,
+and removes them again when the notes leave those folders. Off until a folder
+is selected; a 0.2.0 install that never opts in makes exactly the 0.1.x
+requests.
+
+Implements step 4 of §I in
+`javis-server/docs/superpowers/specs/2026-09-24-obsidian-notes-ingest-design.md`
+(§C.7, §E client side, §F.1–§F.5, the Plugin bullets of §H), following
+`docs/plans/2026-09-24-upload-half.md` task by task. **The server half (PR 1
+OAuth hardening, PR 2 contributions, PR 3 routes) is not in this repository**;
+every request is coded against §E and tested against a fake transport. Do not
+release this before PR 3 is deployed.
+
+## What changed
+
+- `src/core/` (pure: no Obsidian, no clock, no I/O)
+  - `sha256.ts` — synchronous FIPS 180-4, cross-checked against `node:crypto`.
+  - `note-text.ts` — the frontmatter scanner (pinned to `extractFrontmatterBlock`),
+    `uploadText` (the PUT's `text`: BOM stripped, EOLs normalized, top-level
+    `javis_*` keys removed, an empty block dropped), `noteHash`, and text-level
+    readers for `javis_source_id` and `title`.
+  - `stamp.ts` — `stampText`/`restampText`: one inserted line, byte-identical
+    elsewhere, file's own line ending, refuses an unclosed fence, idempotent.
+  - `folders.ts` — §F.3.1 validation.
+  - `upload.ts` — `planUpload(local, server, memory, settings)`: every §F.1
+    action and every §F.3 guard.
+- `src/shell/`
+  - `sources-api.ts` — `GET/PUT/DELETE /wiki/sources/obsidian`.
+  - `upload.ts` — `uploadOnce` (enumerate, fresh read with a 10 s timeout, plan,
+    stamp before PUT, PUT/DELETE, 429 backoff, one step-up, never throws),
+    `SelfWriteTracker`, the edit debounce, `runDownloadThenUpload`.
+  - `auth.ts` — `connect({scope, resource})`, `grantedScopes()`, `wikiResource`.
+  - `vault.ts` — `readFresh` (`vault.read`), `processText`, `listNotesIn`. Still
+    no delete or trash; a test now scans `src/` for either.
+  - `settings.ts`, `folder-suggest.ts`, `review-modal.ts` — the Upload section
+    and the **Review pending changes** command.
+- `src/main.ts` — a run is download then upload in the same single-flight
+  guard; `syncNow(trigger)` keeps its signature.
+- README disclosure (§F.5); version 0.2.0 (`minAppVersion` unchanged 1.11.4).
+
+## Decisions a reviewer should check
+
+All are listed with rationale in the plan (§1). The ones that are judgment
+calls rather than spec text:
+
+- **D-HASH-2** A frontmatter block that is empty after removing `javis_*` lines
+  is dropped with its fences, and so is one that was empty to begin with.
+  Without it, stamping a note with no properties would change its hash.
+  Property-tested over 29 fixtures.
+- **D-PLAN-4, refined.** A listed note whose identity cannot be read
+  (unreadable with no cached id, a hand-mangled id, an unclosed fence) keeps
+  alive any row at its path; one at no known path holds **every** delete
+  (`unreadable-ambiguous`). Path-presence is *not* granted by a readable note
+  with a different, valid id: that note proves the row's note is gone. A
+  readable note with **no** id at a live row's path (a 0-byte sync glitch, a
+  cleared note, frontmatter rewritten by another plugin) is that row's note:
+  blank → nothing is sent and nothing deleted; otherwise the same id is
+  written back (`adopt`) and the edit goes through the normal put and
+  shrink checks. (Review fix: before, such a note let the row be deleted and
+  the note re-ingested as a new source.)
+  Second review: only a note that may *hide* an identity (unreadable with no
+  hint, or a damaged id line) holds deletes — a fully read note with no id
+  line (a `---` horizontal rule at the top) no longer holds every delete for
+  as long as it exists; and only a live row that no listed note carries can
+  explain such a note by path, one note per row, so a rename swap or a
+  deleted row's path no longer lets a possibly-renamed note's source go.
+- **D-PLAN-8, changed in review.** An emptied or 80%-shrunk note is always
+  held (`suspicious-edit`) and counts toward the mass-change threshold
+  (§F.3.5 "its `put` is held with the deletes"; §H). It used to be held only
+  when the cap tripped, which let one truncated note through on its own.
+- **D-PLAN-18 (review): only this vault's rows.** The listing is per
+  account, so a second vault on the same account used to have its rows
+  deleted as "missing" in a loop. A row is now this vault's only when upload
+  memory has it (a PUT from here, or a readable note here carrying its id);
+  no other row is deleted, adopted, or counted toward the cap. Cost: a row
+  whose note vanished while `data.json` was lost stays on the server.
+  **For PR 3 / a later spec:** a per-vault id on PUT and a filtered GET would
+  remove this heuristic.
+- **D-PLAN-9** A blank note with no id is not stamped or uploaded.
+- **D-PLAN-11** An invalid folder selection plans nothing at all.
+- **D-PLAN-13** Deselecting a folder removes its notes after the debounce and
+  the mass cap, **the last folder included** (review fix: the empty selection
+  used to plan nothing, so the settings text and README were false for it).
+  The upload half is skipped with no request only when no folder is selected
+  *and* nothing uploaded is remembered (D-RUN-2).
+- **D-RUN-4** Network errors and 429-after-4-retries stop the run, in addition
+  to §F.2's auth failures; 400/409/413/5xx are per-note.
+- **D-RUN-6** A 409 is reported, not restamped in the same run; the next run's
+  listing shows the row deleted and restamps then.
+- Stamps and restamps are followed by their PUT in the same run; a copy or a
+  deleted-id carrier is uploaded as a new source immediately.
+- **D-AUTH-1, changed in review.** Every connect sends `resource=<origin>/wiki`
+  (§C.3 is unconditional); the union scope is added only once a folder is
+  selected. A read-only 0.2.0 connect used to send no resource and got an
+  `/mcp`-audience grant that a refresh can never move, i.e. every read-only
+  install would break when the server drops the one-release grace on
+  `/wiki/export`. Pre-PR 1 servers ignore the parameter. A read-only device
+  still on the old audience sees a one-line reconnect hint in settings.
+- **D-RUN-3, widened in review.** "Cannot write" = the decodable scope lacks
+  `wiki:write` **or** the decodable `aud` is not `/wiki`. A background run
+  then does not try. An interactive run steps up **before its first request**
+  (so no note is stamped by a run that then gets a 403 and a declined
+  consent), and a declined write grant stops it there. Undecodable tokens are
+  tried, and a 403 drives the one step-up.
+- **Folder validation is case-insensitive** (review fix): on APFS/NTFS a
+  `sources` folder is the download's `Sources`. Notes carrying the download's
+  `javis_slug`/`javis_type` are skipped as `wiki-page` wherever they sit.
+- **The plugin refuses `http:`** unless the host is loopback (review fix):
+  note text and a `wiki:write` bearer must not go in the clear. Second
+  review: the rule (`src/shell/origin.ts`) now also guards `/wiki/export`
+  and every OAuth call (register, authorize, code exchange, refresh; revoke
+  is skipped rather than sent), because the download runs first and carries
+  the same write-capable bearer. **Behavior change from 0.1.x:** a download
+  from a plain-http server on another machine now fails with a sentence
+  asking for https.
+- **A run that stops before planning keeps the previous held / skipped /
+  waiting lists** in `lastUpload` (review fix), so "Review pending changes"
+  survives a network blip.
+- **Re-upload all finishes the job** (review fix): a re-send whose PUT got a
+  5xx stays owed by id (`pendingReuploadIds`) and is re-sent on later runs.
+- **Server-side distill failures are named** (review fix): this vault's rows the
+  poller left `failed` are listed in settings with their `last_error` (§D.5
+  "shows its error"), not just counted.
+- **Tokens are bound to the origin that issued them** (third review): the
+  keychain stores the origin beside the tokens, and a `baseUrl` that differs
+  (a synced or shared `data.json`) gets neither token; disconnect revokes at
+  the issuing origin. A token from before this is bound by its `aud`.
+- **Uploads are bound to one account** (third review): `uploadAccount`
+  (origin + token `sub`) is set by the first upload; a run in another
+  account, or a step-up that comes back as one, stops before sending
+  anything. Settings offers "Start uploads over" as the explicit reset.
+- **Third review, smaller fixes:** the debounce clock is read when the vault
+  is enumerated (after any step-up), not at run start; an unreadable keeper
+  plans nothing for its id instead of restamping the readable carrier; undo
+  reports are limited to this vault's rows (`uploadRemovedIds` remembers
+  what it removed); the server-failure list no longer promises that
+  "Re-upload all" retries (an equal-hash PUT is `200 unchanged`).
+- **`data.json` is sanitized by a tested pure function** (`settings-load.ts`);
+  a malformed memory entry is repaired toward "unknown" (e.g. a non-number
+  `missingSince` → null), which can only delay a delete.
+
+## Wire contract to confirm against PR 3 (D-WIRE-1..4)
+
+- `GET /wiki/sources/obsidian` → `200 {"sources": [Row], "counts": {status: n}}`,
+  `Row = {source_id, vault_path, body_hash (64 hex), status, deleted: bool,
+  last_error: str|null, undo_report: {pages_tombstoned, pages_rebuilt,
+  pages_marked_stale, pages_skipped_adopted}|null}`. No paging. Any malformed
+  row fails the whole response (it drives deletes).
+- `PUT …/{uuid}` JSON `{vault_path, title, text, body_hash}`; 200 unchanged, 202
+  accepted, 400 (with `detail`, shown to the user), 409, 413.
+- `DELETE …/{uuid}` → 202 or 204.
+- 403 carries `WWW-Authenticate: Bearer error="insufficient_scope", …`.
+  **Please make an old-audience token on these routes answer 403
+  insufficient_scope, not 401**: a 401 is treated as expiry (refresh, retry,
+  then "reconnect"), which never triggers the step-up. The plugin now steps up
+  before the first request whenever it can decode an `/mcp` audience, so this
+  matters only for tokens it cannot decode.
+- **D-HASH-5** `body_hash = sha256(utf8(text))` where `text` is exactly the sent
+  string. Notes containing a lone UTF-16 surrogate are not uploaded; the server
+  should not need `surrogatepass`.
+- The privacy URL in the README (`https://javis.is/privacy`) must match PR 3's
+  privacy page.
+
+## Known limits
+
+- Reads are sequential with a 10 s timeout each. A folder of many *blocking*
+  iCloud dataless files makes a run slow (10 s per file) though never unsafe.
+- `JavisWikiApiClient` still captures `baseUrl` at construction (D-API-2,
+  pre-existing, out of scope); the new sources client reads it live.
+- `uploadMemory` lives in `data.json`, which replicates between devices, but
+  its `missingSince` clocks do not (review fix): the old claim that a shared
+  clock could only delay a delete was false — device B could delete on its
+  first scan using a clock device A wrote. Each device now keeps its own
+  clocks in `app.saveLocalStorage` (per vault, per device), and `data.json`
+  always carries `missingSince: null`, so every device needs its own two
+  misses. Losing the local clocks restarts the debounce. Holds are re-derived
+  by each device on every run.
+
+## Tests
+
+Measured on this branch, 2026-09-24:
+
+```
+vitest run       17 files, 600 tests passed (baseline 290; 503 before the first review fixes, 542 before the second, 568 before the third)
+tsc -noEmit      exit 0
+esbuild prod     exit 0
+```
+
+New: `note-text` 62, `upload-plan` 46, `upload` 28, `sources-api` 19,
+`folders` 11, `stamp` 15, `run` 12, `sha256` 5, `settings-defaults` 3; additions
+to `auth` (+9) and `vault` (+3).
+
+UI (`settings.ts`, `folder-suggest.ts`, `review-modal.ts`, `main.ts`) is not
+unit-tested, as before.
+
+## Manual E2E runbook (spec §H), scratch vault against a local server
+
+1. Connect read-only, select a folder, and step up.
+2. Upload 10 notes.
+3. Edit one note to remove a paragraph and see it leave the shared pages.
+4. Rename a note.
+5. Delete a note and see its pages tombstone or rebuild.
+6. Empty the folder, confirm the deletes are held, restore the folder, and
+   confirm the hold clears.
+7. Evict files with iCloud and confirm nothing is deleted.
+
+Then a copy of the real vault, then the real vault (§I.4).
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
+
+---
+
 # Javis Wiki Sync — the initial plugin
 
 Mirrors the Javis wiki into an Obsidian vault, one way, and never deletes a
