@@ -9,3 +9,9 @@ data.json
 
 .DS_Store
 coverage/
+
+# GitNexus index (32MB of generated graph) and its bundled agent skills.
+# Regenerate with `node .gitnexus/run.cjs analyze`. Only the symbol counts in
+# CLAUDE.md / AGENTS.md are committed.
+.gitnexus
+.claude/
