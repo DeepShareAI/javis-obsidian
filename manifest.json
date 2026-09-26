@@ -1,10 +1,10 @@
 {
   "id": "javis-wiki-sync",
   "name": "Javis Wiki Sync",
-  "version": "0.2.0",
   "minAppVersion": "1.11.4",
   "description": "Mirrors your Javis wiki into this vault, and optionally uploads notes from folders you choose. Never deletes a file.",
   "author": "DeepShare",
   "authorUrl": "https://javis.is",
-  "isDesktopOnly": true
+  "isDesktopOnly": true,
+  "version": "0.2.1"
 }
