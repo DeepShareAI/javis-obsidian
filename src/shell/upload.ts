@@ -47,6 +47,8 @@
 
 import { validateFolders } from '../core/folders';
 import {
+  bodyText,
+  contentKey,
   frontmatterRange,
   hasInvalidChars,
   isUuid,
@@ -156,6 +158,7 @@ export function describeNote(path: string, text: string, cachedSourceId: string 
   const read = readSourceId(text);
   const invalidChars = hasInvalidChars(text);
   const sent = uploadText(text);
+  const body = bodyText(text);
   let sourceId: string | null = read?.valid ? read.id : null;
   let invalidId = read !== null && !read.valid;
   if (malformed) {
@@ -172,8 +175,10 @@ export function describeNote(path: string, text: string, cachedSourceId: string 
     sourceId,
     hash: invalidChars ? null : noteHash(text),
     bytes: utf8Bytes(sent),
+    bodyBytes: utf8Bytes(body),
+    contentKey: invalidChars ? null : contentKey(text),
     readable: true,
-    blank: sent.trim() === '',
+    blank: body.trim() === '',
     invalidChars,
     invalidId,
     malformed,
@@ -187,6 +192,8 @@ function unreadable(path: string, cachedSourceId: string | null): LocalNote {
     sourceId: cachedSourceId,
     hash: null,
     bytes: 0,
+    bodyBytes: 0,
+    contentKey: null,
     readable: false,
     blank: false,
     invalidChars: false,
@@ -585,6 +592,8 @@ async function execute(
         path: action.path,
         hash: noteHash(text),
         bytes: utf8Bytes(sent),
+        bodyBytes: utf8Bytes(bodyText(text)),
+        contentKey: contentKey(text),
         missingSince: null,
       };
       return;

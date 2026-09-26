@@ -8,7 +8,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { DEBOUNCE_MS } from '../src/core/upload';
 import type { ServerSource } from '../src/core/upload';
-import { noteHash, readSourceId, uploadText } from '../src/core/note-text';
+import { contentKey, noteHash, readSourceId, uploadText } from '../src/core/note-text';
 import type {
   DeleteOutcome,
   PutOutcome,
@@ -206,6 +206,8 @@ describe('uploadOnce: stamp before PUT (§F.2)', () => {
       path: 'Journal/new.md',
       hash: noteHash(text),
       bytes: 12,
+      bodyBytes: 12, // no frontmatter left after the javis_* line: the whole note is body
+      contentKey: contentKey(text),
       missingSince: null,
     });
   });
