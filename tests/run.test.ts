@@ -140,18 +140,25 @@ describe('runDownloadThenUpload (D-RUN-1)', () => {
   });
 });
 
-describe('0.2.0 release metadata (plan D-REL-1)', () => {
+describe('release metadata (plan D-REL-1)', () => {
   const read = (file: string) => JSON.parse(readFileSync(join(__dirname, '..', file), 'utf8'));
 
-  it('bumps the version everywhere and leaves minAppVersion alone', () => {
+  // Consistency, not a pinned literal: the 0.2.1 bump broke a test that
+  // hard-coded '0.2.0'. What must hold for every release is that the four
+  // version fields agree, versions.json maps the version to minAppVersion,
+  // and no bogus key (version-bump.mjs run without npm_package_version writes
+  // "undefined") sneaks in.
+  it('agrees on one version everywhere and leaves minAppVersion alone', () => {
     const manifest = read('manifest.json');
     const pkg = read('package.json');
     const lock = read('package-lock.json');
-    expect(manifest.version).toBe('0.2.0');
-    expect(pkg.version).toBe('0.2.0');
-    expect(lock.version).toBe('0.2.0');
-    expect(lock.packages[''].version).toBe('0.2.0');
-    expect(read('versions.json')['0.2.0']).toBe('1.11.4');
+    const versions = read('versions.json');
+    expect(manifest.version).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(pkg.version).toBe(manifest.version);
+    expect(lock.version).toBe(manifest.version);
+    expect(lock.packages[''].version).toBe(manifest.version);
+    expect(versions[manifest.version]).toBe('1.11.4');
     expect(manifest.minAppVersion).toBe('1.11.4');
+    expect(Object.keys(versions).every((v) => /^\d+\.\d+\.\d+$/.test(v))).toBe(true);
   });
 });
