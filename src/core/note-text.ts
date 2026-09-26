@@ -210,6 +210,47 @@ export function uploadText(raw: string): string {
   return `${text.slice(0, range.openEnd)}${kept.map((l) => `${l}\n`).join('')}${text.slice(range.closeStart)}`;
 }
 
+/**
+ * The note's body: everything after a well-formed frontmatter block, or the
+ * whole (EOL-normalized) note when there is none or it is malformed.
+ *
+ * E2E runbook F3: the blank and >80%-shrink guards measure THIS, not the sent
+ * text. A short note's properties block used to keep a body wipe above both
+ * thresholds (177 → 82 bytes with the body gone), and the wipe was uploaded.
+ */
+export function bodyText(raw: string): string {
+  const text = normalizeEol(raw);
+  const range = frontmatterRange(text);
+  return range.kind === 'block' ? text.slice(range.closeEnd) : text;
+}
+
+/**
+ * A digest of the note's CONTENT that ignores the order of its top-level
+ * frontmatter keys, `javis_*` keys and line-ending style. Planner-only: the
+ * wire hash stays `noteHash` (the server checks `sha256(text) == body_hash`).
+ *
+ * E2E runbook D2: Obsidian's Properties editor reorders keys, which changed
+ * `noteHash` and re-sent (and re-distilled) a note whose content had not
+ * changed. Each top-level key is kept together with its continuation lines,
+ * the groups are sorted, and the body is appended; text-level only, like the
+ * rest of this module, so a note with broken YAML still gets a key.
+ */
+export function contentKey(raw: string): string {
+  const text = normalizeEol(raw);
+  const range = frontmatterRange(text);
+  if (range.kind !== 'block') return sha256Hex(`\u0000frontmatter\u0000\n${text}`);
+  const groups: string[] = [];
+  for (const line of withoutJavisKeys(blockLines(text, range))) {
+    if (groups.length > 0 && (isContinuation(line) || isBlank(line))) {
+      groups[groups.length - 1] += `\n${line}`;
+    } else if (!isBlank(line)) {
+      groups.push(line);
+    }
+  }
+  const keys = groups.map((g) => g.replace(/\s+$/, '')).sort();
+  return sha256Hex(`\u0000frontmatter\u0000${keys.join('\u0001')}\n${text.slice(range.closeEnd)}`);
+}
+
 /** `sha256(uploadText(raw))`, 64 lowercase hex. The server recomputes exactly this. */
 export function noteHash(raw: string): string {
   return sha256Hex(uploadText(raw));

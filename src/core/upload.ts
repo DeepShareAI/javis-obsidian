@@ -75,6 +75,30 @@ export const DEBOUNCE_MS = 5 * 60 * 1000;
 /** §F.3.5: a note that shrank below this share of its last upload is suspicious. */
 export const SHRINK_RATIO = 0.2;
 
+/**
+ * Whether the note's content differs from what the server holds.
+ *
+ * The hash decides, except when the note only differs from our last upload in
+ * frontmatter key order: same `contentKey` as the upload we remember, and the
+ * server still holds that upload's hash (E2E runbook D2). A missing remembered
+ * key (older memory, lost data.json) falls back to the hash: at worst one
+ * re-upload, never a skipped real edit.
+ */
+function contentChanged(note: LocalNote, row: ServerSource, entry: MemoryEntry | undefined): boolean {
+  if (note.hash === row.body_hash) return false;
+  const sameContent =
+    entry?.contentKey != null &&
+    note.contentKey !== null &&
+    entry.contentKey === note.contentKey &&
+    entry.hash === row.body_hash;
+  return !sameContent;
+}
+
+/** The >80% shrink test, on body bytes (E2E runbook F3). */
+function shrankBody(note: LocalNote, entry: MemoryEntry | undefined): boolean {
+  return entry?.bodyBytes != null && note.bodyBytes < SHRINK_RATIO * entry.bodyBytes;
+}
+
 // ---------------------------------------------------------------------------
 // Inputs
 // ---------------------------------------------------------------------------
@@ -95,11 +119,19 @@ export interface LocalNote {
   sourceId: string | null;
   /** `noteHash` of the text; null when unreadable. */
   hash: string | null;
-  /** UTF-8 length of the text that would be sent. */
+  /** UTF-8 length of the text that would be sent (the 256 KB limit, §E). */
   bytes: number;
+  /**
+   * UTF-8 length of the body after the frontmatter block: what the blank and
+   * shrink guards measure (E2E runbook F3). A short note's properties used to
+   * hide a body wipe from both.
+   */
+  bodyBytes: number;
+  /** `contentKey` of the text (order-insensitive over frontmatter); null when unreadable. */
+  contentKey: string | null;
   /** False when the read failed or timed out (§F.3.2). */
   readable: boolean;
-  /** The sent text is whitespace-only (D-PLAN-2). */
+  /** The note's BODY is whitespace-only (D-PLAN-2; body-based since E2E F3). */
   blank: boolean;
   /**
    * The text holds a lone surrogate (D-HASH-5) or a NUL: the server refuses
@@ -146,8 +178,16 @@ export interface MemoryEntry {
   path: string;
   /** The hash last uploaded; null when unknown. */
   hash: string | null;
-  /** Bytes last uploaded; null when unknown (then only the blank test applies). */
+  /** Bytes last uploaded; null when unknown. */
   bytes: number | null;
+  /**
+   * Body bytes last uploaded — the shrink guard's basis (E2E F3). Absent on
+   * entries written before it existed: then only the blank test applies, so
+   * an upgrade can never cause a false hold.
+   */
+  bodyBytes?: number | null;
+  /** `contentKey` of the last upload (E2E D2). Absent → the hash decides. */
+  contentKey?: string | null;
   /** Epoch ms of the first run that found this row missing; null while present. */
   missingSince: number | null;
 }
@@ -372,6 +412,8 @@ export function planUpload(
       // its size says nothing about the last upload, and the shrink check
       // waits for the next PUT to learn it.
       bytes: note.hash === row.body_hash ? note.bytes : null,
+      bodyBytes: note.hash === row.body_hash ? note.bodyBytes : null,
+      contentKey: note.hash === row.body_hash ? note.contentKey : null,
       missingSince: null,
     };
   }
@@ -517,7 +559,7 @@ export function planUpload(
       if (adoptId !== undefined) {
         const row = rows.get(adoptId)!;
         const hash = note.hash!;
-        const changed = hash !== row.body_hash;
+        const changed = contentChanged(note, row, memory[adoptId]);
         const moved = note.path !== row.vault_path;
         const put: Extract<UploadAction, { kind: 'put' }> = {
           kind: 'put',
@@ -530,7 +572,7 @@ export function planUpload(
         };
         // D-PLAN-8, as for any put against a live row (blank was handled above).
         const entry = memory[adoptId];
-        const shrank = entry?.bytes != null && note.bytes < SHRINK_RATIO * entry.bytes;
+        const shrank = shrankBody(note, entry);
         if (changed && shrank) suspicious.push(put);
         else actions.push(put);
         continue;
@@ -605,7 +647,7 @@ export function planUpload(
         actions.push({ kind: 'put', path: note.path, sourceId: id, hash, bytes: note.bytes, reason: 'new' });
         continue;
       }
-      const changed = hash !== row.body_hash;
+      const changed = contentChanged(note, row, entry);
       const moved = note.path !== row.vault_path;
       if (!changed && !moved && !settings.reuploadAll && !reuploadIds.has(id)) continue;
       const put: Extract<UploadAction, { kind: 'put' }> = {
@@ -617,7 +659,7 @@ export function planUpload(
         reason: changed ? 'changed' : moved ? 'moved' : 'reupload',
       };
       // D-PLAN-8: suspicious only against a live row whose content changed.
-      const shrank = entry?.bytes != null && note.bytes < SHRINK_RATIO * entry.bytes;
+      const shrank = shrankBody(note, entry);
       if (changed && (note.blank || shrank)) suspicious.push(put);
       else actions.push(put);
     }

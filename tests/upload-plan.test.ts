@@ -38,6 +38,8 @@ function note(path: string, sourceId: string | null, over: Partial<LocalNote> = 
     sourceId,
     hash: hashOf(`h${path.length}`),
     bytes: 1000,
+    bodyBytes: 1000,
+    contentKey: null,
     readable: true,
     blank: false,
     invalidChars: false,
@@ -61,7 +63,7 @@ function row(sourceId: string, vault_path: string, over: Partial<ServerSource> =
 }
 
 function mem(path: string, over: Partial<MemoryEntry> = {}): MemoryEntry {
-  return { path, hash: null, bytes: 1000, missingSince: null, ...over };
+  return { path, hash: null, bytes: 1000, bodyBytes: 1000, missingSince: null, ...over };
 }
 
 function settings(over: Partial<PlanSettings> = {}): PlanSettings {
@@ -417,7 +419,10 @@ describe('planUpload: the two-scan debounce (§F.3.3)', () => {
     expect(plan.actions).toEqual([]);
     expect(plan.waiting).toEqual([]);
     expect(plan.nextMemory).toEqual({
-      [id(2)]: { path: keep.note.path, hash: keep.row.body_hash, bytes: keep.note.bytes, missingSince: null },
+      [id(2)]: {
+        path: keep.note.path, hash: keep.row.body_hash, bytes: keep.note.bytes,
+        bodyBytes: keep.note.bodyBytes, contentKey: keep.note.contentKey, missingSince: null,
+      },
     });
     // Re-learned: once its note goes, it is an ordinary delete again.
     const gone = planUpload([], [r, keep.row], plan.nextMemory, settings({ folders: ['Journal', 'Inbox'] }));
@@ -629,12 +634,12 @@ describe('planUpload: an id-less note at a tracked path is that source (D-PLAN-4
   });
 
   it('an id-less edit at the path is a changed put of that source, and a shrink is still suspicious', () => {
-    const edited = note('Journal/a.md', null, { hash: hashOf('new'), bytes: 4000 });
+    const edited = note('Journal/a.md', null, { hash: hashOf('new'), bytes: 4000, bodyBytes: 4000 });
     expect(planUpload([edited], [r], memory, settings()).actions).toMatchObject([
       { kind: 'put', sourceId: id(1), reason: 'changed', adopt: true },
     ]);
     // Shrunk below 20%, with deletes up to the threshold: held with them.
-    const shrunk = note('Journal/a.md', null, { hash: hashOf('tiny'), bytes: 100 });
+    const shrunk = note('Journal/a.md', null, { hash: hashOf('tiny'), bytes: 100, bodyBytes: 100 });
     const gone = syncedMany(5, 'Inbox', 10);
     const plan = planUpload([shrunk], [r, ...gone.rows], { ...memory, ...missingLongAgo(gone.rows) }, settings());
     expect(plan.actions).toEqual([]);
@@ -844,7 +849,7 @@ describe('planUpload: suspicious edits (§F.3.5)', () => {
 
   it('a single >80% shrink, under the threshold, is held; a release sends it', () => {
     const s = synced(1);
-    const truncated = { ...s.note, hash: hashOf('trunc'), bytes: 150 };
+    const truncated = { ...s.note, hash: hashOf('trunc'), bytes: 150, bodyBytes: 150 };
     const memory = { [id(1)]: mem(s.note.path, { bytes: 1000 }) };
     const plan = planUpload([truncated], [s.row], memory, settings());
     expect(plan.actions).toEqual([]);
@@ -857,7 +862,7 @@ describe('planUpload: suspicious edits (§F.3.5)', () => {
   it('an 80% shrink is suspicious: 199 of 1000 bytes is, 200 is not, and no memory is not', () => {
     const all = syncedMany(10);
     const goneRows = all.rows.slice(0, 5);
-    const shrunk = (bytes: number) => ({ ...all.notes[9]!, hash: hashOf('shrunk'), bytes });
+    const shrunk = (bytes: number) => ({ ...all.notes[9]!, hash: hashOf('shrunk'), bytes, bodyBytes: bytes });
     const memory = { ...missingLongAgo(goneRows), [id(10)]: mem(all.notes[9]!.path, { bytes: 1000 }) };
 
     const at199 = planUpload([...all.notes.slice(5, 9), shrunk(199)], all.rows, memory, settings());
@@ -908,5 +913,55 @@ describe('planUpload: holds are re-derived and released (§F.3.6)', () => {
     const inbox = syncedMany(1, 'Inbox', 10);
     const plan = planUpload([], inbox.rows, missingLongAgo(inbox.rows), settings({ release: [`delete:${id(10)}`] }));
     expect(plan.actions).toEqual([{ kind: 'delete', sourceId: id(10), path: 'Inbox/n10.md' }]);
+  });
+});
+
+
+describe('E2E runbook D2/F3: content key and body-based guards', () => {
+  it('D2: a frontmatter reorder (same contentKey, server holds our last upload) is no put', () => {
+    const s = synced(1);
+    const reordered = { ...s.note, hash: hashOf('reordered'), contentKey: 'k1' };
+    const memory = { [id(1)]: mem(s.note.path, { hash: s.row.body_hash, contentKey: 'k1' }) };
+    const plan = planUpload([reordered], [s.row], memory, settings());
+    expect(plan.actions).toEqual([]);
+    expect(plan.held).toEqual([]);
+  });
+
+  it('D2: a real change (different contentKey) is still a put', () => {
+    const s = synced(1);
+    const edited = { ...s.note, hash: hashOf('edited'), contentKey: 'k2' };
+    const memory = { [id(1)]: mem(s.note.path, { hash: s.row.body_hash, contentKey: 'k1' }) };
+    const plan = planUpload([edited], [s.row], memory, settings());
+    expect(plan.actions).toMatchObject([{ kind: 'put', sourceId: id(1), reason: 'changed' }]);
+  });
+
+  it('D2: without a remembered contentKey the hash decides, as before', () => {
+    const s = synced(1);
+    const edited = { ...s.note, hash: hashOf('edited'), contentKey: 'k1' };
+    const plan = planUpload([edited], [s.row], { [id(1)]: mem(s.note.path, { hash: s.row.body_hash }) }, settings());
+    expect(plan.actions).toMatchObject([{ kind: 'put', reason: 'changed' }]);
+  });
+
+  it('D2: the key only counts while the server still holds our last upload', () => {
+    const s = synced(1);
+    const n = { ...s.note, hash: hashOf('x'), contentKey: 'k1' };
+    const memory = { [id(1)]: mem(s.note.path, { hash: hashOf('someone-else'), contentKey: 'k1' }) };
+    expect(planUpload([n], [s.row], memory, settings()).actions).toMatchObject([{ kind: 'put' }]);
+  });
+
+  it('F3: a >80% BODY shrink is held even though the whole file shrank less', () => {
+    const s = synced(1);
+    const cut = { ...s.note, hash: hashOf('cut'), bytes: 271, bodyBytes: 10 };
+    const memory = { [id(1)]: mem(s.note.path, { bytes: 375, bodyBytes: 104 }) };
+    const plan = planUpload([cut], [s.row], memory, settings());
+    expect(plan.held).toMatchObject([{ key: `put:${id(1)}`, reason: 'suspicious-edit' }]);
+  });
+
+  it('F3: an old memory entry without bodyBytes never causes a shrink hold', () => {
+    const s = synced(1);
+    const cut = { ...s.note, hash: hashOf('cut'), bytes: 90, bodyBytes: 10 };
+    const memory = { [id(1)]: { path: s.note.path, hash: null, bytes: 1000, missingSince: null } as MemoryEntry };
+    const plan = planUpload([cut], [s.row], memory, settings());
+    expect(plan.actions).toMatchObject([{ kind: 'put' }]);
   });
 });
