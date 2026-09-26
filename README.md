@@ -47,11 +47,10 @@ The plugin is not in the Obsidian community catalogue yet.
 2. `BRAT: Add a beta plugin for testing`, and give it this repository.
 3. Enable **Javis Wiki Sync** under Settings → Community plugins.
 
-**Uploading needs 0.2.0**, which is a pre-release until it has been through a
-full test on a real vault. If BRAT installs 0.1.1, install
-[0.2.0](https://github.com/DeepShareAI/javis-obsidian/releases/tag/0.2.0)
-manually as below. Settings → **Javis Wiki Sync** shows an **Upload your
-notes** section only in 0.2.0 and later.
+**Uploading needs 0.2.0 or later.** 0.2.1 is the current release. If you
+installed 0.1.1 earlier, update the plugin (BRAT does this for you).
+Settings → **Javis Wiki Sync** shows an **Upload your notes** section only in
+0.2.0 and later.
 
 **Manually:**
 
