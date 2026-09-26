@@ -47,6 +47,12 @@ The plugin is not in the Obsidian community catalogue yet.
 2. `BRAT: Add a beta plugin for testing`, and give it this repository.
 3. Enable **Javis Wiki Sync** under Settings → Community plugins.
 
+**Uploading needs 0.2.0**, which is a pre-release until it has been through a
+full test on a real vault. If BRAT installs 0.1.1, install
+[0.2.0](https://github.com/DeepShareAI/javis-obsidian/releases/tag/0.2.0)
+manually as below. Settings → **Javis Wiki Sync** shows an **Upload your
+notes** section only in 0.2.0 and later.
+
 **Manually:**
 
 1. Download `main.js` and `manifest.json` from a release, or build them with
@@ -186,6 +192,90 @@ unchanged page re-renders byte-identically instead of showing up as a change.
 
 Off by default. Nothing below happens until you add a folder under Settings →
 **Javis Wiki Sync** → **Upload your notes**.
+
+Uploading makes notes you write yourself part of your Javis wiki. The server
+distills each note into wiki pages the same way it distills your voice sessions
+and email, and those pages come back into this vault like every other wiki
+page.
+
+### Quick start
+
+1. **Connect** (see [Connect it](#connect-it)) and let one sync finish.
+2. Settings → **Javis Wiki Sync** → **Upload your notes** → **Add a folder**.
+   Start typing a folder name, pick it from the list, and click **Add**. For
+   example, `Journal` uploads every note in `Journal/` and its subfolders. You
+   can add several folders.
+
+   You cannot pick the vault root, `.obsidian/`, one of the nine wiki folders,
+   or a folder inside one. Two picked folders cannot be inside each other.
+3. **Allow uploads.** If you connected before choosing a folder, your sign-in
+   is read-only. Click **Reconnect to allow uploads**. Your browser opens and
+   you sign in to Javis. The consent screen lists an extra, optional
+   permission as a ticked checkbox: *Store the text of notes in the folders you
+   choose, and add them to your wiki.* Leave it ticked and allow, and Obsidian
+   shows *Javis: uploads allowed.* If you untick it, you stay connected
+   read-only and nothing is uploaded.
+4. **Sync.** Click **Sync now** (the ribbon icon, the command palette, or
+   settings). The upload runs right after the download. The first time a note
+   is uploaded, the plugin adds one line to its properties,
+   `javis_source_id: …` (see [Details](#details)).
+5. **Wait for your wiki to catch up.** The server works through uploaded notes
+   in the background, one at a time, a batch about once a minute, within an
+   hourly limit per account. A handful of notes is done in minutes; a large
+   first upload of hundreds of notes can take hours. New and updated pages
+   arrive in the nine wiki folders on a later sync. Each uploaded note also
+   gets its own source page, `Sources/obsidian-note-<id>.md`.
+
+From then on, just write. An edited note is uploaded again on the next sync.
+Turn on **Upload when a note is edited** to upload 2 minutes after you stop
+typing instead.
+
+### Checking progress
+
+Everything is in Settings → **Javis Wiki Sync** → **Upload your notes**, under
+the last upload:
+
+| You see | It means |
+| --- | --- |
+| *On the server: … pending, … done* | How many of your notes the server is still processing, and how many are in the wiki. `failed` means the server gave up on a note; `deleted` counts removed notes. |
+| **Failed** | The upload itself failed, for example because the network dropped. It is retried on the next sync. |
+| **Not added to the wiki (edit the note to retry)** | The server could not distill the note. Editing the note sends it again. |
+| **Too large**, **Unreadable**, **Unstampable**, **Invalid characters** | Notes that were skipped, with the reason: over 256 KB, only in the cloud (for example iCloud), a properties block with no closing `---`, or characters the server rejects. |
+| **Held changes** | Removals or suspicious edits waiting for you. See [Stopping, and held changes](#stopping-and-held-changes). |
+| **Will be removed from Javis if still missing** | Notes that disappeared and will be removed after the 5-minute check. |
+| **Recently removed** | What each removal did, for example *removed from 4 pages; 2 older pages may still mention it*. |
+
+### Stopping, and held changes
+
+- **To stop uploading a folder**, click ✕ next to it. Its notes are then
+  removed from Javis, not just paused: their stored text is deleted and the
+  wiki is rebuilt without them, after the same safety checks as any removal.
+  This applies even to the last folder.
+- **To remove one note from Javis**, delete it or move it out of the selected
+  folders.
+- **Disconnect** only signs this device out. Notes you already uploaded stay in
+  Javis. To take them out, remove them as above while connected.
+- **If many notes vanish at once**, or a note suddenly empties, the plugin
+  holds those changes instead of sending them. It says so once. Run **Review
+  pending changes** from the command palette (or click **Review** in
+  settings), check the list, and click **Send these changes**, or **Cancel**
+  if the files are coming back. A hold clears itself when the files return.
+
+### If uploads look stuck
+
+- **Everything stays *pending*.** The server has not processed the notes yet.
+  Large first uploads take hours because of the hourly limit. If nothing moves
+  for a long time, the server's processing may be switched off; ask the Javis
+  operator.
+- **No Upload your notes section.** You are on 0.1.x. Install 0.2.0 (see
+  [Install](#install)).
+- **Uploads are paused: different account.** This device is signed in to a
+  different Javis account than the one this vault uploaded to. Sign back in
+  to that account, or click **Start uploads over**.
+- **A note never shows up.** Check the skipped lists above. A note in a wiki
+  folder is never uploaded, because the wiki is not fed back into itself.
+
+### Details
 
 **What is sent.** The full text of every `.md` note in the folders you select,
 including subfolders — body and properties, except the plugin's own
