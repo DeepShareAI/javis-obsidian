@@ -28,17 +28,17 @@ import {
 } from '../src/shell/vault';
 
 describe('MANAGED_FOLDERS', () => {
-  it('is the nine §E folders', () => {
+  it('is the nine §E folders, under Javis-wiki', () => {
     expect(MANAGED_FOLDERS).toEqual([
-      'Comparisons',
-      'Concepts',
-      'Decisions',
-      'Entities',
-      'Gaps',
-      'Questions',
-      'Sources',
-      'Syntheses',
-      'Topics',
+      'Javis-wiki/Comparisons',
+      'Javis-wiki/Concepts',
+      'Javis-wiki/Decisions',
+      'Javis-wiki/Entities',
+      'Javis-wiki/Gaps',
+      'Javis-wiki/Questions',
+      'Javis-wiki/Sources',
+      'Javis-wiki/Syntheses',
+      'Javis-wiki/Topics',
     ]);
   });
 

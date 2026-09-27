@@ -42,7 +42,7 @@
 import type { App, SecretStorage, TFile } from 'obsidian';
 
 import { JAVIS_REV } from '../core/types';
-import { TYPE_TO_PLURAL } from '../core/slug';
+import { TYPE_TO_PLURAL, WIKI_ROOT } from '../core/slug';
 import { isUnderFolder } from '../core/folders';
 import { isUuid, SOURCE_ID_KEY } from '../core/note-text';
 import type { Frontmatter, SecretStore, UploadVault, VaultAdapter, VaultNote } from './contracts';
@@ -90,7 +90,7 @@ function defaultParseYaml(yaml: string): unknown {
 // ---------------------------------------------------------------------------
 
 /**
- * The nine §E folders, at the vault root, in a stable order.
+ * The nine §E folders, under `WIKI_ROOT`, in a stable order.
  *
  * Derived from `TYPE_TO_PLURAL` rather than written out again: the map is
  * already the single source of truth for the folder half of
@@ -102,7 +102,7 @@ function defaultParseYaml(yaml: string): unknown {
  * `createFolder` would throw.
  */
 export const MANAGED_FOLDERS: readonly string[] = Object.freeze(
-  [...new Set(Object.values(TYPE_TO_PLURAL))].sort(),
+  [...new Set(Object.values(TYPE_TO_PLURAL))].sort().map((plural) => `${WIKI_ROOT}/${plural}`),
 );
 
 /**
@@ -120,11 +120,9 @@ export function parentFolder(path: string): string | null {
 /**
  * Every folder that must exist before `path` can be created, outermost first.
  *
- * `'Concepts/Agent-Builder.md'` yields `['Concepts']`. Deeper paths yield the
- * whole chain, which today's `pathForPage` never produces — the tree is exactly
- * one level deep by §E — but `Vault.createFolder` does not create intermediate
- * folders, so handling the general case costs three lines and removes a
- * failure mode from any future caller that nests.
+ * `'Javis-wiki/Concepts/Agent-Builder.md'` yields
+ * `['Javis-wiki', 'Javis-wiki/Concepts']`, outermost first, because
+ * `Vault.createFolder` does not create intermediate folders.
  *
  * Empty segments (a doubled slash, a leading slash) are dropped rather than
  * turned into a folder named `''`.

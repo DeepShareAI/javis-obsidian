@@ -71,7 +71,7 @@ export function sanitizeSlug(slug: string): string {
   return out.length > 0 ? out : FALLBACK;
 }
 
-/** The vault-root folder for a page type, or null when the type is unknown. */
+/** The page-type folder (inside `WIKI_ROOT`) for a type, or null when the type is unknown. */
 export function folderForType(pageType: string): string | null {
   return TYPE_TO_PLURAL[pageType] ?? null;
 }
@@ -79,12 +79,13 @@ export function folderForType(pageType: string): string | null {
 /**
  * Vault-relative path for a page, or null when the page type is unknown.
  *
- * Root placement is load-bearing (§E): bodies contain `[[Concepts/Foo]]`
- * literally, and Obsidian resolves that from the vault root. Nesting the tree
- * under a parent folder would mean rewriting every link on every write.
+ * Under `WIKI_ROOT` since 0.3.0 (spec 2026-09-27). Bodies still contain
+ * `[[Concepts/Foo]]` literally, and that keeps working one folder down:
+ * Obsidian resolves a link path by suffix, so `Concepts/Foo` finds
+ * `Javis-wiki/Concepts/Foo.md` without any link being rewritten.
  */
 export function pathForPage(pageType: string, slug: string): string | null {
   const folder = folderForType(pageType);
   if (folder === null) return null;
-  return `${folder}/${sanitizeSlug(slug)}.md`;
+  return `${WIKI_ROOT}/${folder}/${sanitizeSlug(slug)}.md`;
 }

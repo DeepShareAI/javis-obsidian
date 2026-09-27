@@ -23,7 +23,7 @@ describe('reconcile', () => {
 
     expect(action.kind).toBe('create');
     if (action.kind !== 'create') throw new Error('unreachable');
-    expect(action.path).toBe('Concepts/Agent-Builder.md');
+    expect(action.path).toBe('Javis-wiki/Concepts/Agent-Builder.md');
     expect(action.content).toContain('generated body');
     expect(action.content).toContain('javis_slug: Agent-Builder');
   });
@@ -67,7 +67,7 @@ describe('reconcile', () => {
 
     expect(action.kind).toBe('replace');
     if (action.kind !== 'replace') throw new Error('unreachable');
-    expect(action.path).toBe('Concepts/Agent-Builder.md');
+    expect(action.path).toBe('Javis-wiki/Concepts/Agent-Builder.md');
     expect(action.body).toBe('generated body');
     expect(action.frontmatter['javis_rev']).toBe('2026-09-14T09:00:00Z');
     expect(action.frontmatter['my-rating']).toBe(5);
@@ -84,7 +84,7 @@ describe('reconcile', () => {
   it('tombstones a deleted row that has a file', () => {
     expect(reconcile(page({ deleted_at: '2026-09-14T00:00:00Z' }), { javis_rev: 'x' })).toEqual({
       kind: 'tombstone',
-      path: 'Concepts/Agent-Builder.md',
+      path: 'Javis-wiki/Concepts/Agent-Builder.md',
     });
   });
 
@@ -130,17 +130,17 @@ describe('reconcile', () => {
     expect(verdicts).not.toContain('delete');
   });
 
-  it('routes each page type to its own vault-root folder', () => {
+  it('routes each page type to its own folder under Javis-wiki', () => {
     const cases: Array<[string, string]> = [
-      ['source', 'Sources/Agent-Builder.md'],
-      ['entity', 'Entities/Agent-Builder.md'],
-      ['concept', 'Concepts/Agent-Builder.md'],
-      ['topic', 'Topics/Agent-Builder.md'],
-      ['comparison', 'Comparisons/Agent-Builder.md'],
-      ['question', 'Questions/Agent-Builder.md'],
-      ['synthesis', 'Syntheses/Agent-Builder.md'],
-      ['decision', 'Decisions/Agent-Builder.md'],
-      ['gap', 'Gaps/Agent-Builder.md'],
+      ['source', 'Javis-wiki/Sources/Agent-Builder.md'],
+      ['entity', 'Javis-wiki/Entities/Agent-Builder.md'],
+      ['concept', 'Javis-wiki/Concepts/Agent-Builder.md'],
+      ['topic', 'Javis-wiki/Topics/Agent-Builder.md'],
+      ['comparison', 'Javis-wiki/Comparisons/Agent-Builder.md'],
+      ['question', 'Javis-wiki/Questions/Agent-Builder.md'],
+      ['synthesis', 'Javis-wiki/Syntheses/Agent-Builder.md'],
+      ['decision', 'Javis-wiki/Decisions/Agent-Builder.md'],
+      ['gap', 'Javis-wiki/Gaps/Agent-Builder.md'],
     ];
     for (const [type, path] of cases) {
       const action = reconcile(page({ page_type: type }), null);
