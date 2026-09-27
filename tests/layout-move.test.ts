@@ -87,6 +87,20 @@ describe('planLayoutMove', () => {
     expect(plan).toEqual({ moves: [], conflicts: [] });
   });
 
+  it('leaves an upload-tracked note (javis_source_id) where it is, even with javis_type/javis_slug (review)', () => {
+    // A user's tracked note in a selected root `Concepts/` folder that gained the
+    // wiki keys (pasted properties, a template). Moving it out of the upload
+    // selection would make its source go missing and get deleted on the server.
+    const plan = planLayoutMove(
+      [
+        note('Concepts/Idea.md', javis('concept', 'Idea', { javis_source_id: '3f2b8c1e-9a4d-4e6f-8b7a-1c2d3e4f5a6b' })),
+        note('Concepts/Odd.md', javis('concept', 'Odd', { javis_source_id: 'not-a-uuid' })),
+      ],
+      new Set(),
+    );
+    expect(plan).toEqual({ moves: [], conflicts: [] });
+  });
+
   it('moves a note whose javis_slug YAML-parsed as a number (Review Focus 1)', () => {
     const plan = planLayoutMove([note('Topics/2024.md', javis('topic', 2024))], new Set());
     expect(plan.moves).toEqual([{ from: 'Topics/2024.md', to: 'Javis-wiki/Topics/2024.md' }]);

@@ -10,11 +10,16 @@
  * carries it out.
  *
  * Only Javis notes move: a note with no `javis_type`/`javis_slug` in a root
- * `Concepts/` folder is the user's and stays. The file name is kept, so user
+ * `Concepts/` folder is the user's and stays. So does a note carrying
+ * `javis_source_id`, even with both wiki keys: only the upload stamp writes
+ * that key, so it is a tracked user note (the root names are selectable for
+ * upload since 0.3.0), and moving it out of the selection would get its source
+ * deleted on the server. The file name is kept, so user
  * edits and adopted notes arrive untouched. A destination that already exists
  * is a conflict, never an overwrite.
  */
 
+import { SOURCE_ID_KEY } from './note-text';
 import { TYPE_TO_PLURAL, WIKI_ROOT } from './slug';
 import type { Frontmatter } from './types';
 import { JAVIS_SLUG, JAVIS_TYPE } from './types';
@@ -68,7 +73,13 @@ function hasValue(value: unknown): boolean {
 }
 
 function isJavisNote(frontmatter: Frontmatter | null): boolean {
-  return frontmatter !== null && hasValue(frontmatter[JAVIS_TYPE]) && hasValue(frontmatter[JAVIS_SLUG]);
+  return (
+    frontmatter !== null &&
+    hasValue(frontmatter[JAVIS_TYPE]) &&
+    hasValue(frontmatter[JAVIS_SLUG]) &&
+    // Present at all, valid or not: the download never writes this key.
+    !(SOURCE_ID_KEY in frontmatter)
+  );
 }
 
 /**

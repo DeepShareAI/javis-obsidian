@@ -926,6 +926,25 @@ describe('moveLegacyLayout', () => {
     expect(vault.files.has('Concepts/mine.md')).toBe(true);
   });
 
+  it('leaves an upload-tracked root note alone, broken YAML or not (review)', async () => {
+    const vault = new FakeVault();
+    vault.seed(
+      'Concepts/Idea.md',
+      { ...javisFm('concept', 'Idea'), javis_source_id: '3f2b8c1e-9a4d-4e6f-8b7a-1c2d3e4f5a6b' },
+      'mine',
+    );
+    vault.seed(
+      'Concepts/Broken.md',
+      null,
+      '---\njavis_source_id: 3f2b8c1e-9a4d-4e6f-8b7a-1c2d3e4f5a6c\njavis_type: concept\njavis_slug: Broken\ntitle: a: b\n---\nmine',
+    );
+
+    expect(await moveLegacyLayout(vault)).toEqual({ moved: 0, conflicts: [] });
+    expect(vault.calls).toEqual([]);
+    expect(vault.files.has('Concepts/Idea.md')).toBe(true);
+    expect(vault.files.has('Concepts/Broken.md')).toBe(true);
+  });
+
   it('skips a root note it cannot read instead of failing the whole sync (review)', async () => {
     const vault = new FakeVault();
     vault.seed('Concepts/A.md', javisFm('concept', 'A'));

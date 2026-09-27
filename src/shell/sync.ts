@@ -33,7 +33,7 @@
  */
 
 import { replaceMarkerBlock } from '../core/markers';
-import { isWikiPageText } from '../core/note-text';
+import { isWikiPageText, readSourceId } from '../core/note-text';
 import { legacyDestination, planLayoutMove, type LayoutCandidate, type LayoutMove } from '../core/layout-move';
 import { reconcile } from '../core/reconcile';
 import { applyTombstone, tombstoneFrontmatter } from '../core/render';
@@ -221,6 +221,8 @@ export interface LayoutMoveResult {
  * whose text still has a top-level `javis_slug:`/`javis_type:` line is a Javis
  * note the user broke by hand. It cannot be planned, and skipping it would let
  * the download fork it into a second copy, so it counts as a failed move.
+ * Unless it also has a `javis_source_id:` line: that is an upload-tracked user
+ * note, which is never moved (see src/core/layout-move.ts), so it is skipped.
  *
  * Every move is attempted. If any failed, this throws AFTER the rest, so the
  * caller downloads nothing this run: a download would `create` the unmoved
@@ -249,7 +251,13 @@ export async function moveLegacyLayout(
     let brokenWikiPage: boolean;
     try {
       frontmatter = await vault.readFrontmatter(note.path);
-      brokenWikiPage = frontmatter === null && isWikiPageText((await vault.read(note.path)) ?? '');
+      if (frontmatter === null) {
+        const text = (await vault.read(note.path)) ?? '';
+        // A `javis_source_id` line marks an upload-tracked user note, which never moves.
+        brokenWikiPage = isWikiPageText(text) && readSourceId(text) === null;
+      } else {
+        brokenWikiPage = false;
+      }
     } catch (error) {
       // Most notes here are the user's own; one unreadable file must not stop every sync.
       console.warn(`Javis: could not read ${note.path} to check whether it is a Javis note; skipped`, error);

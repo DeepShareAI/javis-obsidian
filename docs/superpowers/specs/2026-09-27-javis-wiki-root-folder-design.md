@@ -56,7 +56,7 @@ export function planLayoutMove(
 ): LayoutMovePlan;
 ```
 
-A candidate is moved when **both** hold:
+A candidate is moved when **all** hold:
 
 1. Its path is exactly `<folder>/<name>.md` where `<folder>` is one of the nine
    `TYPE_TO_PLURAL` values, compared case-insensitively (same rationale as
@@ -65,6 +65,13 @@ A candidate is moved when **both** hold:
 2. Its frontmatter has both `javis_type` and `javis_slug`. Notes without them
    are the user's and stay put. Adopted (`javis_sync: false`) and tombstoned
    notes move like any other.
+3. Its frontmatter has no `javis_source_id`. Only the upload stamp writes that
+   key, so a note carrying it is an upload-tracked user note that gained the
+   wiki keys (pasted properties, a template), not a page the download wrote.
+   Since the root names are selectable for upload (D6), moving it would take
+   it out of the selection and the server would delete its source. It stays.
+   The same holds for a hand-broken-YAML note with a top-level
+   `javis_source_id:` line: it is skipped, not a failed move.
 
 Destination: `${WIKI_ROOT}/<canonical folder>/<name>.md`. The folder takes its
 canonical spelling from `TYPE_TO_PLURAL`, so the destination equals what
@@ -158,6 +165,7 @@ Unit tests (vitest):
   - Javis notes in each of the nine folders are planned to their canonical
     destinations.
   - Notes without `javis_type`/`javis_slug` are not moved.
+  - Notes carrying `javis_source_id` are not moved, even with both wiki keys.
   - Folder names in other cases (`concepts/Foo.md`) match and map to
     `Javis-wiki/Concepts/Foo.md`.
   - Nested (`Concepts/sub/x.md`) and root-level (`x.md`) files are ignored.
