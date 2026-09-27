@@ -319,10 +319,10 @@ describe('planUpload: defensive filters', () => {
 
   it('an invalid folder plans nothing at all (D-PLAN-11)', () => {
     const r = row(id(1), 'Journal/a.md');
-    const plan = planUpload([note('Journal/b.md', null)], [r], missingLongAgo([r]), settings({ folders: ['Journal', 'Concepts'] }));
+    const plan = planUpload([note('Journal/b.md', null)], [r], missingLongAgo([r]), settings({ folders: ['Journal', 'Javis-wiki/Concepts'] }));
     expect(plan.actions).toEqual([]);
     expect(plan.held).toEqual([]);
-    expect(plan.invalidFolders).toMatchObject([{ folder: 'Concepts' }]);
+    expect(plan.invalidFolders).toMatchObject([{ folder: 'Javis-wiki/Concepts' }]);
     expect(plan.nextMemory).toEqual(missingLongAgo([r]));
   });
 
