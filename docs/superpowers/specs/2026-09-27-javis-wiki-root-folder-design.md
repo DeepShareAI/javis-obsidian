@@ -118,9 +118,11 @@ root, config folder, hidden, duplicate and nesting rules are unchanged.
 ### `src/main.ts` — notices
 
 - `moved > 0`: `Javis: moved N notes into Javis-wiki/.`
-- `moveConflicts.length > 0`: `Javis: N notes in the vault root were not moved
-  because Javis-wiki already has a note with the same name.` The paths are
-  written to the console.
+- `moveConflicts.length > 0`: the paths are written to the console on every
+  run; on interactive runs only (Sync now, settings, review) a notice says
+  `Javis: N notes in the vault root were not moved because Javis-wiki already
+  has a note with the same name.` A conflict persists until the user resolves
+  it, and a notice on every timer run would nag.
 - Nothing moved: no notice.
 
 ## Error handling

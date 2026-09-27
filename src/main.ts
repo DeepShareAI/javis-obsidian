@@ -382,6 +382,23 @@ export default class JavisWikiSyncPlugin extends Plugin {
         .join('\n');
       new Notice(`Javis could not write some notes:\n${listed}`, 12_000);
     }
+    // Spec 2026-09-27. The move happens once per vault, so its notice is shown
+    // whatever started the run; a conflict persists until the user resolves
+    // it, so its notice waits for a run the user started.
+    if (result.moved > 0) {
+      new Notice(`Javis: moved ${result.moved} ${result.moved === 1 ? 'note' : 'notes'} into Javis-wiki/.`);
+    }
+    if (result.moveConflicts.length > 0) {
+      console.warn('Javis: not moved into Javis-wiki/ because the destination exists:', result.moveConflicts);
+      if (INTERACTIVE.has(trigger)) {
+        const n = result.moveConflicts.length;
+        new Notice(
+          `Javis: ${n} ${n === 1 ? 'note' : 'notes'} in the vault root ${n === 1 ? 'was' : 'were'} not moved ` +
+            'because Javis-wiki already has a note with the same name. The developer console lists them.',
+          12_000,
+        );
+      }
+    }
     return result;
   }
 
