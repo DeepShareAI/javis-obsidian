@@ -390,3 +390,23 @@ describe('the plugin never deletes or trashes a vault file (§F.2)', () => {
     expect(hits).toEqual([]);
   });
 });
+
+describe('the layout move never triggers Obsidian link updates (review)', () => {
+  // `FileManager.renameFile` runs Obsidian's link update, and with the default
+  // "Automatically update internal links" off that update opens a blocking
+  // "Update links?" modal per moved page with incoming links; the sync awaits
+  // each one. `Vault.rename` never touches links, and `[[Concepts/Foo]]` still
+  // resolves by suffix (spec D4).
+  const code = readFileSync(join(__dirname, '..', 'src', 'shell', 'vault.ts'), 'utf8')
+    .split('\n')
+    .filter((line) => !/^\s*(\*|\/\/|\/\*)/.test(line))
+    .join('\n');
+
+  it('does not call fileManager.renameFile', () => {
+    expect(code).not.toMatch(/fileManager\s*\??\.\s*renameFile\s*\(/);
+  });
+
+  it('moves the note with vault.rename', () => {
+    expect(code).toMatch(/this\.#app\.vault\.rename\(file, to\)/);
+  });
+});

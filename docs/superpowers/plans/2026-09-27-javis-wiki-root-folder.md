@@ -6,7 +6,7 @@
 
 **Architecture:** `pathForPage` gains a `Javis-wiki/` prefix, so every write path moves in one place. A new pure planner (`src/core/layout-move.ts`) decides which root-level notes are Javis notes and where each one goes. `syncOnce` runs that plan through two new `VaultAdapter` methods before it resolves the cursor, so the delta always reconciles against notes that are already in place. Links in page bodies are untouched: Obsidian resolves `[[Concepts/Foo]]` by path suffix.
 
-**Tech Stack:** TypeScript, Obsidian plugin API (`Vault`, `FileManager.renameFile`), vitest, esbuild.
+**Tech Stack:** TypeScript, Obsidian plugin API (`Vault`, `Vault.rename` — not `FileManager.renameFile`, see spec "Links elsewhere in the vault"), vitest, esbuild.
 
 **Spec:** `docs/superpowers/specs/2026-09-27-javis-wiki-root-folder-design.md`
 
@@ -586,9 +586,10 @@ In `src/shell/contracts.ts`, inside `interface VaultAdapter`, after `listMarkdow
   /**
    * Move a note (spec 2026-09-27, the 0.2.x → 0.3.0 layout move).
    *
-   * MUST create `to`'s parent folders first, and MUST go through
-   * `FileManager.renameFile` so Obsidian owns the move and applies the user's
-   * "Automatically update internal links" preference. Rejects with
+   * MUST create `to`'s parent folders first, and MUST use `Vault.rename`, not
+   * `FileManager.renameFile`: the latter runs Obsidian's link update, which
+   * with the default link setting opens a blocking prompt per moved page.
+   * Links keep resolving by suffix (spec D4). Rejects with
    * `VaultWriteError` when `from` is missing, when anything already exists at
    * `to` (a move never overwrites), or when the rename fails.
    */
@@ -616,10 +617,11 @@ In `src/shell/vault.ts`, inside `ObsidianVaultAdapter`, directly after the `list
   /**
    * Move a note, creating the destination folders first.
    *
-   * `fileManager.renameFile`, not `vault.rename`: the file manager is what
-   * applies the user's link-update preference to notes that link here.
-   * Whichever way that preference is set, links keep resolving — rewritten ones
-   * point at the new path, untouched ones resolve by suffix.
+   * `vault.rename`, not `fileManager.renameFile` (review): the file manager
+   * runs Obsidian's link update, and with "Automatically update internal
+   * links" off (the default) that update opens a blocking "Update links?"
+   * modal for every moved page with incoming links. `vault.rename` never
+   * touches links; `[[Concepts/Foo]]` still resolves by suffix (spec D4).
    */
   async rename(from: string, to: string): Promise<void> {
     const file = this.#require(from);
@@ -628,7 +630,7 @@ In `src/shell/vault.ts`, inside `ObsidianVaultAdapter`, directly after the `list
     }
     await this.#ensureFolders(to);
     try {
-      await this.#app.fileManager.renameFile(file, to);
+      await this.#app.vault.rename(file, to);
     } catch (err) {
       throw new VaultWriteError(from, `Could not move ${from} to ${to}: ${describeError(err)}`, {
         cause: err,

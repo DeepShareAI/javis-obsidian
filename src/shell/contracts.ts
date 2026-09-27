@@ -424,9 +424,10 @@ export interface VaultAdapter {
   /**
    * Move a note (spec 2026-09-27, the 0.2.x → 0.3.0 layout move).
    *
-   * MUST create `to`'s parent folders first, and MUST go through
-   * `FileManager.renameFile` so Obsidian owns the move and applies the user's
-   * "Automatically update internal links" preference. Rejects with
+   * MUST create `to`'s parent folders first, and MUST use `Vault.rename`, not
+   * `FileManager.renameFile`: the latter runs Obsidian's link update, which
+   * with the default link setting opens a blocking prompt per moved page.
+   * Links keep resolving by suffix (spec D4). Rejects with
    * `VaultWriteError` when `from` is missing, when anything already exists at
    * `to` (a move never overwrites), or when the rename fails.
    */

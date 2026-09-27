@@ -481,10 +481,12 @@ export class ObsidianVaultAdapter implements VaultAdapter, UploadVault {
   /**
    * Move a note, creating the destination folders first.
    *
-   * `fileManager.renameFile`, not `vault.rename`: the file manager is what
-   * applies the user's link-update preference to notes that link here.
-   * Whichever way that preference is set, links keep resolving — rewritten ones
-   * point at the new path, untouched ones resolve by suffix.
+   * `vault.rename`, not `fileManager.renameFile` (review): the file manager
+   * runs Obsidian's link update, and with "Automatically update internal
+   * links" off (the default) that update opens a blocking "Update links?"
+   * modal for every moved page with incoming links, and does not resolve until
+   * the user answers it. `vault.rename` never touches links; `[[Concepts/Foo]]`
+   * still resolves to `Javis-wiki/Concepts/Foo.md` by suffix (spec D4).
    */
   async rename(from: string, to: string): Promise<void> {
     const file = this.#require(from);
@@ -493,7 +495,7 @@ export class ObsidianVaultAdapter implements VaultAdapter, UploadVault {
     }
     await this.#ensureFolders(to);
     try {
-      await this.#app.fileManager.renameFile(file, to);
+      await this.#app.vault.rename(file, to);
     } catch (err) {
       throw new VaultWriteError(from, `Could not move ${from} to ${to}: ${describeError(err)}`, {
         cause: err,

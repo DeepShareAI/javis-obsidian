@@ -2,22 +2,24 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-// The move goes through fileManager.renameFile, so Obsidian's "Automatically
-// update internal links" setting may rewrite links to moved notes (spec,
-// "Links elsewhere in the vault"). User-facing docs must not promise otherwise.
+// The move goes through `Vault.rename`, not `FileManager.renameFile`, so
+// Obsidian never rewrites or prompts about links to moved notes: with
+// "Automatically update internal links" off, renameFile would open a blocking
+// "Update links?" modal per moved page (review). Links keep resolving by
+// suffix (spec D4). User-facing docs must not tie the move to that setting.
 const DOCS = ['README.md', 'docs/pr-drafts/0.3.0-javis-wiki-root.md'];
 
 describe('user-facing docs on link rewriting during the 0.3.0 move', () => {
   for (const doc of DOCS) {
-    it(`${doc} does not claim no link is ever rewritten`, () => {
-      const text = readFileSync(join(__dirname, '..', doc), 'utf8').replace(/\s+/g, ' ');
-      expect(text).not.toMatch(/no link is rewritten|nothing is rewritten/i);
+    const text = (): string => readFileSync(join(__dirname, '..', doc), 'utf8').replace(/\s+/g, ' ');
+
+    it(`${doc} says links keep resolving by suffix`, () => {
+      expect(text()).toMatch(/\[\[Concepts\/Foo\]\]/);
+      expect(text()).toMatch(/plugin never rewrites links/i);
     });
 
-    it(`${doc} mentions Obsidian's link-update setting`, () => {
-      const text = readFileSync(join(__dirname, '..', doc), 'utf8').replace(/\s+/g, ' ');
-      expect(text).toMatch(/Automatically update internal links/);
-      expect(text).toMatch(/plugin never rewrites links/i);
+    it(`${doc} does not say the move is subject to Obsidian's link-update setting`, () => {
+      expect(text()).not.toMatch(/Automatically update internal links/);
     });
   }
 });

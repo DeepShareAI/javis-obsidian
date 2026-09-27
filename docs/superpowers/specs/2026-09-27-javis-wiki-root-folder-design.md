@@ -90,8 +90,11 @@ In `src/shell/contracts.ts`, `ObsidianVaultAdapter` (`src/shell/vault.ts`) and
 the test fake:
 
 - `rename(from: string, to: string): Promise<void>` creates missing parent
-  folders (reusing `#ensureFolders`), then calls `app.fileManager.renameFile`
-  so Obsidian owns the move and applies the user's link-update preference.
+  folders (reusing `#ensureFolders`), then calls `app.vault.rename`. Not
+  `app.fileManager.renameFile`: that runs Obsidian's link update, which with
+  "Automatically update internal links" off (the default) opens a blocking
+  "Update links?" modal for every moved page with incoming links, and the
+  sync would wait on each one. `vault.rename` never touches links.
   Rejects with `VaultWriteError` if `to` exists.
 - `removeFolderIfEmpty(path: string): Promise<void>` deletes the folder only
   when it has no children. It never deletes files.
@@ -147,11 +150,12 @@ root, config folder, hidden, duplicate and nesting rules are unchanged.
 | `removeFolderIfEmpty` throws | Logged and ignored; an empty folder is harmless and the next sync retries. |
 | Nothing to move | Steady state. Only the folder listing runs, with no notice. |
 
-**Links elsewhere in the vault.** With "Automatically update internal links"
-on, Obsidian may rewrite the user's links to `[[Javis-wiki/Concepts/Foo]]`.
-With it off, links stay `[[Concepts/Foo]]` and resolve by suffix. Both work. A
-page body Obsidian rewrites is replaced with the server's version at that
-page's next server update. This is harmless because `javis_rev` is untouched.
+**Links elsewhere in the vault.** The move uses `vault.rename`, so Obsidian
+does not rewrite or prompt about links to moved notes, whatever the
+"Automatically update internal links" setting. Links stay `[[Concepts/Foo]]`
+and resolve by suffix (D4). (`fileManager.renameFile` was rejected in review:
+with that setting off, Obsidian 1.13 asks per rename in a modal the sync would
+block on, and "Always update" flips the setting vault-wide.)
 
 **Rollback.** Reinstalling 0.2.1 writes a fresh tree at the root, since the
 old version only looks there. The release notes say so. There is no reverse
