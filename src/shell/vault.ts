@@ -476,6 +476,40 @@ export class ObsidianVaultAdapter implements VaultAdapter, UploadVault {
     });
   }
 
+  /**
+   * Move a note, creating the destination folders first.
+   *
+   * `fileManager.renameFile`, not `vault.rename`: the file manager is what
+   * applies the user's link-update preference to notes that link here.
+   * Whichever way that preference is set, links keep resolving — rewritten ones
+   * point at the new path, untouched ones resolve by suffix.
+   */
+  async rename(from: string, to: string): Promise<void> {
+    const file = this.#require(from);
+    if (this.#app.vault.getAbstractFileByPath(to) !== null) {
+      throw new VaultWriteError(from, `Could not move ${from}: ${to} already exists`);
+    }
+    await this.#ensureFolders(to);
+    try {
+      await this.#app.fileManager.renameFile(file, to);
+    } catch (err) {
+      throw new VaultWriteError(from, `Could not move ${from} to ${to}: ${describeError(err)}`, {
+        cause: err,
+      });
+    }
+  }
+
+  /**
+   * Remove an emptied 0.2.x root wiki folder. `children` is Obsidian's view,
+   * which omits OS files such as `.DS_Store`; a folder holding one makes
+   * `vault.delete` throw, and the caller treats that as "leave it".
+   */
+  async removeFolderIfEmpty(path: string): Promise<void> {
+    const folder = this.#app.vault.getFolderByPath(path);
+    if (folder === null || folder.children.length > 0) return;
+    await this.#app.vault.delete(folder);
+  }
+
   // -- the upload half (spec 2026-09-24 §F.2) ------------------------------
   //
   // Still no delete and no trash. The upload never removes a vault file: a

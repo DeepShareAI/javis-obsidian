@@ -284,7 +284,7 @@ describe('maxRevision', () => {
 // ---------------------------------------------------------------------------
 
 import { readFileSync, readdirSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 
 import { cachedSourceIdHint, notesUnder } from '../src/shell/vault';
 
@@ -350,15 +350,24 @@ describe('the plugin never deletes or trashes a vault file (§F.2)', () => {
     }
   });
 
+  // The one sanctioned removal (spec 2026-09-27): `removeFolderIfEmpty` deletes
+  // a FOLDER, and only after checking it has no children. It can never take a
+  // note with it. Exempted by exact file and line text, so any other removal —
+  // including a second `vault.delete` in the same file — still fails.
+  const SANCTIONED = new Set([`${join('src', 'shell', 'vault.ts')}: await this.#app.vault.delete(folder);`]);
+
   it('no source file calls a vault, adapter or fileManager removal API', () => {
     // Code lines only: the prohibition is quoted in several doc comments.
-    const offenders = sources(join(__dirname, '..', 'src')).flatMap((file) =>
+    const root = join(__dirname, '..');
+    const offenders = sources(join(root, 'src')).flatMap((file) =>
       readFileSync(file, 'utf8')
         .split('\n')
         .filter((line) => !/^\s*(\*|\/\/|\/\*)/.test(line))
         .filter((line) => REMOVAL.test(line))
-        .map((line) => `${file}: ${line.trim()}`),
+        .map((line) => `${relative(root, file)}: ${line.trim()}`),
     );
-    expect(offenders).toEqual([]);
+    expect(offenders.filter((o) => !SANCTIONED.has(o))).toEqual([]);
+    // The exemption is used exactly once; a copy of the line elsewhere in the file would show twice.
+    expect(offenders.filter((o) => SANCTIONED.has(o))).toHaveLength(1);
   });
 });

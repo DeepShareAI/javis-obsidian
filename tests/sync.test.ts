@@ -42,6 +42,8 @@ class FakeVault implements VaultAdapter {
   readonly calls: string[] = [];
   /** Paths whose next write throws, to exercise per-note failure isolation. */
   readonly failWrites = new Set<string>();
+  /** Paths the metadata cache has not indexed yet: `listMarkdownFiles` reports no frontmatter. */
+  readonly uncached = new Set<string>();
 
   seed(path: string, frontmatter: Frontmatter | null, content = ''): void {
     this.files.set(path, { content, frontmatter });
@@ -86,8 +88,22 @@ class FakeVault implements VaultAdapter {
   async listMarkdownFiles(): Promise<readonly VaultNote[]> {
     return [...this.files.entries()].map(([path, file]) => ({
       path,
-      frontmatter: file.frontmatter,
+      frontmatter: this.uncached.has(path) ? null : file.frontmatter,
     }));
+  }
+
+  async rename(from: string, to: string): Promise<void> {
+    this.calls.push(`rename ${from} -> ${to}`);
+    this.#guard(from);
+    const file = this.files.get(from);
+    if (file === undefined) throw new VaultWriteError(from, `No note at ${from}`);
+    if (this.files.has(to)) throw new VaultWriteError(from, `${to} already exists`);
+    this.files.delete(from);
+    this.files.set(to, file);
+  }
+
+  async removeFolderIfEmpty(path: string): Promise<void> {
+    this.calls.push(`rmdir-if-empty ${path}`);
   }
 
   #guard(path: string): void {

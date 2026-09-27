@@ -419,6 +419,24 @@ export interface VaultAdapter {
    * pages the loop then skips as `unchanged`.
    */
   listMarkdownFiles(): Promise<readonly VaultNote[]>;
+
+  /**
+   * Move a note (spec 2026-09-27, the 0.2.x → 0.3.0 layout move).
+   *
+   * MUST create `to`'s parent folders first, and MUST go through
+   * `FileManager.renameFile` so Obsidian owns the move and applies the user's
+   * "Automatically update internal links" preference. Rejects with
+   * `VaultWriteError` when `from` is missing, when anything already exists at
+   * `to` (a move never overwrites), or when the rename fails.
+   */
+  rename(from: string, to: string): Promise<void>;
+
+  /**
+   * Delete the folder at `path` only when Obsidian lists nothing inside it; a
+   * no-op when it is absent or not empty. The only removal this contract
+   * allows, and it can never take a note with it.
+   */
+  removeFolderIfEmpty(path: string): Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
