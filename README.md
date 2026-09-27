@@ -98,7 +98,10 @@ A subfolder is created only when a page needs it.
 
 Page bodies contain links such as `[[Concepts/Foo]]` literally. Obsidian
 resolves a link path by its ending, so that link finds
-`Javis-wiki/Concepts/Foo.md` and no link is rewritten.
+`Javis-wiki/Concepts/Foo.md`. The plugin never rewrites links. If Obsidian's
+"Automatically update internal links" setting is on, Obsidian may update
+links to moved notes during the upgrade (for example to
+`[[Javis-wiki/Concepts/Foo]]`); either link form resolves.
 
 **Upgrading from 0.2.x.** Earlier versions wrote the nine folders at the
 vault root. The first sync after upgrading moves every Javis note from those
