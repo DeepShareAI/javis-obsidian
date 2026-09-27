@@ -31,6 +31,7 @@
  */
 
 import { replaceMarkerBlock } from '../core/markers';
+import { isWikiPageText } from '../core/note-text';
 import { legacyDestination, planLayoutMove, type LayoutCandidate, type LayoutMove } from '../core/layout-move';
 import { reconcile } from '../core/reconcile';
 import { applyTombstone, tombstoneFrontmatter } from '../core/render';
@@ -214,6 +215,11 @@ export interface LayoutMoveResult {
  * may not have indexed a note yet, and a Javis note missed here would be
  * re-created at its new path by the download, leaving a permanent conflict.
  *
+ * A root note whose frontmatter will not parse (`readFrontmatter` is null) but
+ * whose text still has a top-level `javis_slug:`/`javis_type:` line is a Javis
+ * note the user broke by hand. It cannot be planned, and skipping it would let
+ * the download fork it into a second copy, so it counts as a failed move.
+ *
  * Every move is attempted. If any failed, this throws AFTER the rest, so the
  * caller downloads nothing this run: a download would `create` the unmoved
  * page at its new path. The next sync retries the move.
@@ -224,14 +230,19 @@ export interface LayoutMoveResult {
 export async function moveLegacyLayout(vault: VaultAdapter): Promise<LayoutMoveResult> {
   const listed = await vault.listMarkdownFiles();
   const candidates: LayoutCandidate[] = [];
+  const failures: { path: string; message: string }[] = [];
   for (const note of listed) {
     if (legacyDestination(note.path) === null) continue;
-    candidates.push({ path: note.path, frontmatter: await vault.readFrontmatter(note.path) });
+    const frontmatter = await vault.readFrontmatter(note.path);
+    if (frontmatter === null && isWikiPageText((await vault.read(note.path)) ?? '')) {
+      failures.push({ path: note.path, message: 'its properties (YAML) do not parse; fix them so it can move' });
+      continue;
+    }
+    candidates.push({ path: note.path, frontmatter });
   }
   const plan = planLayoutMove(candidates, new Set(listed.map((note) => note.path)));
 
   let moved = 0;
-  const failures: { path: string; message: string }[] = [];
   const emptied = new Set<string>();
   for (const move of plan.moves) {
     try {

@@ -889,6 +889,19 @@ describe('moveLegacyLayout', () => {
     expect(vault.files.has('Concepts/A.md')).toBe(true);
   });
 
+  it('refuses to download past a Javis note whose YAML will not parse, instead of forking it (review)', async () => {
+    const vault = new FakeVault();
+    // readFrontmatter answers null (parse error), but the text is plainly a wiki page.
+    vault.seed('Concepts/Foo.md', null, '---\njavis_type: concept\njavis_slug: Foo\ntitle: a: b\n---\nmy edits');
+    vault.seed('Concepts/B.md', javisFm('concept', 'B'));
+    vault.seed('Concepts/mine.md', null, '---\ntitle: a: b\n---\nnot ours');
+
+    await expect(moveLegacyLayout(vault)).rejects.toThrow(/Concepts\/Foo\.md/);
+    expect(vault.files.has('Javis-wiki/Concepts/B.md')).toBe(true);
+    expect(vault.files.has('Concepts/Foo.md')).toBe(true);
+    expect(vault.files.has('Concepts/mine.md')).toBe(true);
+  });
+
   it('does nothing on a vault that is already migrated', async () => {
     const vault = new FakeVault();
     vault.seed('Javis-wiki/Concepts/A.md', javisFm('concept', 'A'));
