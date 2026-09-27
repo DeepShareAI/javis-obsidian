@@ -370,4 +370,23 @@ describe('the plugin never deletes or trashes a vault file (§F.2)', () => {
     // The exemption is used exactly once; a copy of the line elsewhere in the file would show twice.
     expect(offenders.filter((o) => SANCTIONED.has(o))).toHaveLength(1);
   });
+
+  // Review: with the sanctioned removal above in the code, no prose may still
+  // promise there is no `vault.delete` call or no delete primitive at all.
+  it('no README or header comment claims the plugin has no delete call', () => {
+    const root = join(__dirname, '..');
+    const stale = [
+      /no call to\s*(>\s*)?`vault\.delete`/,
+      /no `delete`, no `trash`, and no way to reach one/,
+      /exposes none to call/,
+      /no route to the\s*(\*\s*)?vault's destructive API/,
+      /with no delete and no trash/,
+    ];
+    const files = ['README.md', ...sources(join(root, 'src')).map((f) => relative(root, f))];
+    const hits = files.flatMap((file) => {
+      const text = readFileSync(join(root, file), 'utf8');
+      return stale.filter((re) => re.test(text)).map((re) => `${file}: ${re.source}`);
+    });
+    expect(hits).toEqual([]);
+  });
 });

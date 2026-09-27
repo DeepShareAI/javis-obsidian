@@ -14,12 +14,14 @@
  *
  * Three structural decisions in this file, each load-bearing:
  *
- * 1. **There is no `delete`, no `trash`, and no way to reach one.** §F.2: "The
- *    plugin never calls `vault.delete` or `vault.trash`." The `App` handle is a
- *    true ECMAScript private field (`#app`), not a TypeScript `private` — so
- *    the prohibition survives a cast to `any`, which a compile-time-only
- *    modifier would not. A caller holding this adapter has no route to the
- *    vault's destructive API at all.
+ * 1. **No file is ever deleted or trashed.** §F.2: "The plugin never calls
+ *    `vault.delete` or `vault.trash`" — with one sanctioned exception (spec
+ *    2026-09-27): `removeFolderIfEmpty` deletes an emptied 0.2.x wiki FOLDER,
+ *    and only after checking it has no children, so it can never take a note
+ *    with it. The `App` handle is a true ECMAScript private field (`#app`), not
+ *    a TypeScript `private` — so a caller holding this adapter can reach the
+ *    vault's destructive API only through that one guarded method, even after
+ *    a cast to `any`, which a compile-time-only modifier would not ensure.
  *
  * 2. **The `obsidian` module is never imported at the top level.** Types come
  *    in through `import type`, which TypeScript erases; the single runtime

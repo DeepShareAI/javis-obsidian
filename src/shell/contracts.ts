@@ -533,8 +533,9 @@ export interface SyncDeps {
 
 /**
  * The vault, as the upload half needs it. A separate, narrower seam than
- * `VaultAdapter`, and — like it — with no delete and no trash: §F.2 "the
- * plugin never calls `vault.delete` or `vault.trash`" holds for uploads too.
+ * `VaultAdapter`, and with no removal of any kind (not even `VaultAdapter`'s
+ * empty-folder `removeFolderIfEmpty`): the upload never deletes or trashes a
+ * vault file.
  */
 export interface UploadVault {
   /**

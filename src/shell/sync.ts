@@ -26,8 +26,10 @@
  *    holding it back is not enough, so the run also raises
  *    `SyncResult.pendingFullResync`. Every write in §F.2 is idempotent, which
  *    is what makes re-delivery free.
- * 3. **Never unlink.** There is no call to any delete primitive in this file,
- *    and `VaultAdapter` (contracts.ts) exposes none to call.
+ * 3. **Never unlink a note.** The only removal `VaultAdapter` (contracts.ts)
+ *    exposes is `removeFolderIfEmpty`, used after the 0.2.x layout move to drop
+ *    an emptied root wiki folder; it refuses any folder with children, so no
+ *    file is ever deleted or trashed.
  */
 
 import { replaceMarkerBlock } from '../core/markers';

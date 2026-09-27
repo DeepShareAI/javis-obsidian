@@ -16,10 +16,10 @@ markers, and **never deletes a file**.
 > Create an empty vault, connect it, let it sync, and look at what landed. This
 > plugin writes into a `Javis-wiki/` folder of whatever vault it is enabled
 > in, and if you already use that folder name for your own notes, its files
-> will land beside yours. It cannot delete anything — there is no call to
-> `vault.delete` or `vault.trash` anywhere in it — but "cannot delete" is not
-> the same as "cannot surprise you". Back up any vault you care about before
-> pointing this at it.
+> will land beside yours. It never deletes a note: its only removal is an
+> empty 0.2.x wiki folder (such as `Concepts/`) after its notes have been moved
+> into `Javis-wiki/`. But "never deletes a note" is not the same as "cannot
+> surprise you". Back up any vault you care about before pointing this at it.
 
 ## Requirements
 
