@@ -31,6 +31,7 @@
  */
 
 import { replaceMarkerBlock } from '../core/markers';
+import { legacyDestination, planLayoutMove, type LayoutCandidate, type LayoutMove } from '../core/layout-move';
 import { reconcile } from '../core/reconcile';
 import { applyTombstone, tombstoneFrontmatter } from '../core/render';
 import { pathForPage } from '../core/slug';
@@ -42,8 +43,8 @@ import type {
   SyncResult,
   VaultAdapter,
 } from './contracts';
-import { HttpError, SyncCancelledError, isJavisError } from './errors';
-import { maxRevision } from './vault';
+import { HttpError, SyncCancelledError, VaultWriteError, isJavisError } from './errors';
+import { maxRevision, parentFolder } from './vault';
 
 /**
  * The §F.1 cursor.
@@ -197,6 +198,69 @@ function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted) throw new SyncCancelledError('Sync was cancelled.');
 }
 
+/** What the layout move did, for the notices in src/main.ts. */
+export interface LayoutMoveResult {
+  moved: number;
+  conflicts: readonly LayoutMove[];
+}
+
+/**
+ * Move whatever the 0.2.x root layout left behind into `Javis-wiki/`
+ * (spec 2026-09-27). Runs at the start of every sync and is a folder listing
+ * once nothing is left to move.
+ *
+ * Frontmatter comes from `readFrontmatter` (the file), not from
+ * `listMarkdownFiles` (the metadata cache): on the vault-open sync the cache
+ * may not have indexed a note yet, and a Javis note missed here would be
+ * re-created at its new path by the download, leaving a permanent conflict.
+ *
+ * Every move is attempted. If any failed, this throws AFTER the rest, so the
+ * caller downloads nothing this run: a download would `create` the unmoved
+ * page at its new path. The next sync retries the move.
+ *
+ * Only a root folder that lost a note this run is offered to
+ * `removeFolderIfEmpty`; a failure there is logged and ignored.
+ */
+export async function moveLegacyLayout(vault: VaultAdapter): Promise<LayoutMoveResult> {
+  const listed = await vault.listMarkdownFiles();
+  const candidates: LayoutCandidate[] = [];
+  for (const note of listed) {
+    if (legacyDestination(note.path) === null) continue;
+    candidates.push({ path: note.path, frontmatter: await vault.readFrontmatter(note.path) });
+  }
+  const plan = planLayoutMove(candidates, new Set(listed.map((note) => note.path)));
+
+  let moved = 0;
+  const failures: { path: string; message: string }[] = [];
+  const emptied = new Set<string>();
+  for (const move of plan.moves) {
+    try {
+      await vault.rename(move.from, move.to);
+      moved += 1;
+      emptied.add(parentFolder(move.from)!);
+    } catch (error) {
+      failures.push({ path: move.from, message: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  for (const folder of emptied) {
+    try {
+      await vault.removeFolderIfEmpty(folder);
+    } catch (error) {
+      console.warn(`Javis: could not remove the emptied folder ${folder}`, error);
+    }
+  }
+
+  if (failures.length > 0) {
+    const first = failures[0]!;
+    throw new VaultWriteError(
+      first.path,
+      `Could not move ${failures.length} ${failures.length === 1 ? 'note' : 'notes'} into Javis-wiki/ ` +
+        `(${first.path}: ${first.message}). Nothing was downloaded; the next sync retries.`,
+    );
+  }
+  return { moved, conflicts: plan.conflicts };
+}
+
 /**
  * Run the §F.2 loop once.
  *
@@ -285,6 +349,10 @@ export async function syncOnce(deps: SyncDeps): Promise<SyncResult> {
   };
 
   throwIfAborted(signal);
+  // Before the cursor: the rescan and every `decideAction` must see the notes
+  // where `pathForPage` now puts them (spec 2026-09-27).
+  const layout = await moveLegacyLayout(vault);
+  throwIfAborted(signal);
   const since = await resolveCursor(vault, deps.cachedCursor, deps.pendingFullResync);
 
   let serverTime: string;
@@ -321,6 +389,8 @@ export async function syncOnce(deps: SyncDeps): Promise<SyncResult> {
     // wrote everything it was handed. This is the flag that makes it true of
     // the rest.
     pendingFullResync: state.failures.length > 0 && !cursorFromCache,
+    moved: layout.moved,
+    moveConflicts: layout.conflicts,
     failures: state.failures,
     startedAt,
     finishedAt: new Date().toISOString(),

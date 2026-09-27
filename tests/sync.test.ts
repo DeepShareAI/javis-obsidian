@@ -10,7 +10,7 @@
 
 import { describe, expect, it, vi } from 'vitest';
 
-import { JAVIS_DELETED, JAVIS_REV, JAVIS_SYNC } from '../src/core/types';
+import { JAVIS_DELETED, JAVIS_REV, JAVIS_SLUG, JAVIS_SYNC, JAVIS_TYPE } from '../src/core/types';
 import { MARKER_END, MARKER_START } from '../src/core/markers';
 import { TOMBSTONE_BANNER } from '../src/core/render';
 import type {
@@ -25,7 +25,7 @@ import type {
   VaultNote,
 } from '../src/shell/contracts';
 import { HttpError, SyncCancelledError, VaultWriteError, AuthRevokedError } from '../src/shell/errors';
-import { applyAction, decideAction, resolveCursor, summarize, syncOnce } from '../src/shell/sync';
+import { applyAction, decideAction, moveLegacyLayout, resolveCursor, summarize, syncOnce } from '../src/shell/sync';
 
 // ---------------------------------------------------------------------------
 // Fakes
@@ -178,6 +178,10 @@ function deps(over: Partial<SyncDeps> & Pick<SyncDeps, 'api' | 'vault'>): SyncDe
 }
 
 const CONCEPT_PATH = 'Javis-wiki/Concepts/Agent-Builder.md';
+
+function javisFm(type: string, slug: string, rev = '2026-09-13T04:12:00Z'): Frontmatter {
+  return { [JAVIS_TYPE]: type, [JAVIS_SLUG]: slug, [JAVIS_REV]: rev };
+}
 
 // ---------------------------------------------------------------------------
 // resolveCursor — §F.1
@@ -765,6 +769,133 @@ describe('syncOnce', () => {
     expect(result.skipped).toBe(1);
     expect(vault.calls).toEqual([]);
   });
+  it('moves the old layout first, so the delta reconciles against the moved note', async () => {
+    const vault = new FakeVault();
+    const p = page();
+    vault.seed('Concepts/Agent-Builder.md', javisFm('concept', 'Agent-Builder', p.updated_at), 'body');
+    const api = new FakeApi([{ pages: [p], serverTime: '2026-09-13T06:00:00Z' }]);
+
+    const result = await syncOnce(deps({ api, vault }));
+
+    expect(result.moved).toBe(1);
+    expect(result.moveConflicts).toEqual([]);
+    expect(result.created).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(vault.calls).toEqual([
+      'rename Concepts/Agent-Builder.md -> Javis-wiki/Concepts/Agent-Builder.md',
+      'rmdir-if-empty Concepts',
+    ]);
+  });
+
+  it('downloads nothing when a move fails', async () => {
+    const vault = new FakeVault();
+    vault.seed('Concepts/Agent-Builder.md', javisFm('concept', 'Agent-Builder'));
+    vault.failWrites.add('Concepts/Agent-Builder.md');
+    const api = new FakeApi([{ pages: [page()], serverTime: '2026-09-13T06:00:00Z' }]);
+
+    await expect(syncOnce(deps({ api, vault }))).rejects.toBeInstanceOf(VaultWriteError);
+    expect(api.sinceSeen).toEqual([]);
+    expect(vault.files.has('Javis-wiki/Concepts/Agent-Builder.md')).toBe(false);
+  });
+
+  it('recovers the cursor from moved notes when data.json is gone (Review Focus 4)', async () => {
+    const vault = new FakeVault();
+    vault.seed('Concepts/Agent-Builder.md', javisFm('concept', 'Agent-Builder', '2026-09-20T00:00:00Z'));
+    const api = new FakeApi([{ pages: [], serverTime: '2026-09-27T00:00:00Z' }]);
+
+    await syncOnce(deps({ api, vault, cachedCursor: null }));
+
+    expect(api.sinceSeen).toEqual(['2026-09-20T00:00:00Z']);
+  });
+
+  it('reports a conflict and still syncs the Javis-wiki copy', async () => {
+    const vault = new FakeVault();
+    const p = page();
+    vault.seed('Concepts/Agent-Builder.md', javisFm('concept', 'Agent-Builder', p.updated_at), 'old');
+    vault.seed('Javis-wiki/Concepts/Agent-Builder.md', javisFm('concept', 'Agent-Builder', p.updated_at), 'new');
+    const api = new FakeApi([{ pages: [p], serverTime: '2026-09-13T06:00:00Z' }]);
+
+    const result = await syncOnce(deps({ api, vault }));
+
+    expect(result.moved).toBe(0);
+    expect(result.moveConflicts).toEqual([
+      { from: 'Concepts/Agent-Builder.md', to: 'Javis-wiki/Concepts/Agent-Builder.md' },
+    ]);
+    expect(result.skipped).toBe(1);
+    expect(vault.files.get('Concepts/Agent-Builder.md')?.content).toBe('old');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// moveLegacyLayout — spec 2026-09-27
+// ---------------------------------------------------------------------------
+
+describe('moveLegacyLayout', () => {
+  it('moves root-level Javis notes under Javis-wiki and tidies only the folders it moved from (Review Focus 5)', async () => {
+    const vault = new FakeVault();
+    vault.seed('Concepts/A.md', javisFm('concept', 'A'), 'a body');
+    vault.seed('Concepts/mine.md', null, 'my own note');
+    vault.seed('Topics/T.md', javisFm('topic', 'T'));
+    vault.seed('Gaps/mine.md', { tags: ['x'] });
+    vault.seed('Journal/j.md', null);
+
+    const result = await moveLegacyLayout(vault);
+
+    expect(result).toEqual({ moved: 2, conflicts: [] });
+    expect(vault.calls).toEqual([
+      'rename Concepts/A.md -> Javis-wiki/Concepts/A.md',
+      'rename Topics/T.md -> Javis-wiki/Topics/T.md',
+      'rmdir-if-empty Concepts',
+      'rmdir-if-empty Topics',
+    ]);
+    expect(vault.files.get('Javis-wiki/Concepts/A.md')?.content).toBe('a body');
+    expect(vault.files.has('Concepts/mine.md')).toBe(true);
+    expect(vault.files.has('Gaps/mine.md')).toBe(true);
+  });
+
+  it('reads frontmatter from the file, not the metadata cache (Review Focus 3)', async () => {
+    const vault = new FakeVault();
+    vault.seed('Concepts/A.md', javisFm('concept', 'A'));
+    vault.uncached.add('Concepts/A.md');
+
+    expect(await moveLegacyLayout(vault)).toEqual({ moved: 1, conflicts: [] });
+    expect(vault.files.has('Javis-wiki/Concepts/A.md')).toBe(true);
+  });
+
+  it('reports a conflict and leaves both copies where they are', async () => {
+    const vault = new FakeVault();
+    vault.seed('Concepts/A.md', javisFm('concept', 'A'), 'old');
+    vault.seed('Javis-wiki/Concepts/A.md', javisFm('concept', 'A'), 'new');
+
+    const result = await moveLegacyLayout(vault);
+
+    expect(result).toEqual({
+      moved: 0,
+      conflicts: [{ from: 'Concepts/A.md', to: 'Javis-wiki/Concepts/A.md' }],
+    });
+    expect(vault.calls).toEqual([]);
+    expect(vault.files.get('Concepts/A.md')?.content).toBe('old');
+    expect(vault.files.get('Javis-wiki/Concepts/A.md')?.content).toBe('new');
+  });
+
+  it('attempts every move, then throws if any failed', async () => {
+    const vault = new FakeVault();
+    vault.seed('Concepts/A.md', javisFm('concept', 'A'));
+    vault.seed('Concepts/B.md', javisFm('concept', 'B'));
+    vault.failWrites.add('Concepts/A.md');
+
+    await expect(moveLegacyLayout(vault)).rejects.toBeInstanceOf(VaultWriteError);
+    expect(vault.files.has('Javis-wiki/Concepts/B.md')).toBe(true);
+    expect(vault.files.has('Concepts/A.md')).toBe(true);
+  });
+
+  it('does nothing on a vault that is already migrated', async () => {
+    const vault = new FakeVault();
+    vault.seed('Javis-wiki/Concepts/A.md', javisFm('concept', 'A'));
+
+    expect(await moveLegacyLayout(vault)).toEqual({ moved: 0, conflicts: [] });
+    expect(vault.calls).toEqual([]);
+  });
 });
 
 describe('summarize', () => {
@@ -777,6 +908,8 @@ describe('summarize', () => {
     scanned: 0,
     nextCursor: null,
     pendingFullResync: false,
+    moved: 0,
+    moveConflicts: [],
     failures: [],
     startedAt: '2026-09-13T06:00:00Z',
     finishedAt: '2026-09-13T06:00:01Z',

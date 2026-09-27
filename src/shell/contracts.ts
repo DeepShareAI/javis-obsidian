@@ -24,6 +24,7 @@
 import type { ExportResponse, Frontmatter, ServerPage } from '../core/types';
 import type { SyncAction } from '../core/reconcile';
 import type { FolderError } from '../core/folders';
+import type { LayoutMove } from '../core/layout-move';
 import type {
   HeldAction,
   ServerSource,
@@ -482,6 +483,10 @@ export interface SyncResult {
    * Always written, never OR-ed: a clean run clears the flag.
    */
   pendingFullResync: boolean;
+  /** Notes moved from the 0.2.x root layout into `Javis-wiki/` this run (spec 2026-09-27). */
+  moved: number;
+  /** Root-level Javis notes left in place because their `Javis-wiki/` path was taken. */
+  moveConflicts: readonly LayoutMove[];
   startedAt: string;
   finishedAt: string;
 }
