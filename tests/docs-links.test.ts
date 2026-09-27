@@ -23,3 +23,18 @@ describe('user-facing docs on link rewriting during the 0.3.0 move', () => {
     });
   }
 });
+
+// 0.3.0 moves 0.2.x root wiki notes into Javis-wiki/ with `Vault.rename`, so
+// the README must not promise the plugin never renames a file (review).
+describe('README "What it does not do" and the 0.3.0 move', () => {
+  const readme = (): string =>
+    readFileSync(join(__dirname, '..', 'README.md'), 'utf8').replace(/\s+/g, ' ');
+
+  it('does not claim the plugin never renames a file', () => {
+    expect(readme()).not.toMatch(/Delete, trash, or rename a file/);
+  });
+
+  it('names the one-time move as the only rename', () => {
+    expect(readme()).toMatch(/rename one \(apart from the one-time move of 0\.2\.x wiki notes into `Javis-wiki\/`/);
+  });
+});

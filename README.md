@@ -374,8 +374,9 @@ you allow uploads says the same thing as this section.
 Upload anything outside the folders you select, including attachments and
 canvases. Write back edits you make to the generated wiki notes. Sync
 transcripts, daily notes, or skill data. Create stub notes for links that point
-nowhere. Delete, trash, or rename a file. Run on mobile. Run while Obsidian is
-closed.
+nowhere. Delete or trash a file, or rename one (apart from the one-time move of
+0.2.x wiki notes into `Javis-wiki/` on upgrade). Run on mobile. Run while
+Obsidian is closed.
 
 ## Developing
 
