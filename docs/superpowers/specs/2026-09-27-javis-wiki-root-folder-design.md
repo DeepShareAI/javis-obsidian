@@ -124,6 +124,10 @@ root, config folder, hidden, duplicate and nesting rules are unchanged.
   has a note with the same name.` A conflict persists until the user resolves
   it, and a notice on every timer run would nag.
 - Nothing moved: no notice.
+- These notices come from `syncOnce`'s `onLayoutMoved` callback, which fires
+  right after the move and before the download. A run that then fails
+  (offline, 5xx, 429, cancel, or another rename failing) still shows the
+  moved count, because the next run finds nothing left to move.
 
 ## Error handling
 

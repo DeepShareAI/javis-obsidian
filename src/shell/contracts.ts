@@ -517,6 +517,14 @@ export interface SyncDeps {
   signal?: AbortSignal;
   /** Called after each batch, for the status bar. */
   onProgress?: (done: number, action: SyncAction['kind']) => void;
+  /**
+   * Called once the layout move (spec 2026-09-27) has run, before anything
+   * else can fail: the download, a cancel, or another move in the same run.
+   * `moved` counts the renames that succeeded even when the run then throws,
+   * so the caller can tell the user where their notes went. A later run finds
+   * nothing left to move, so a count dropped here is dropped for good.
+   */
+  onLayoutMoved?: (result: { moved: number; conflicts: readonly LayoutMove[] }) => void;
 }
 
 // ---------------------------------------------------------------------------

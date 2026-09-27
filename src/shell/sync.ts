@@ -230,8 +230,14 @@ export interface LayoutMoveResult {
  *
  * Only a root folder that lost a note this run is offered to
  * `removeFolderIfEmpty`; a failure there is logged and ignored.
+ *
+ * `onMoved` receives the result before this returns or throws, so the moves
+ * that succeeded are still reported when another one failed.
  */
-export async function moveLegacyLayout(vault: VaultAdapter): Promise<LayoutMoveResult> {
+export async function moveLegacyLayout(
+  vault: VaultAdapter,
+  onMoved?: (result: LayoutMoveResult) => void,
+): Promise<LayoutMoveResult> {
   const listed = await vault.listMarkdownFiles();
   const candidates: LayoutCandidate[] = [];
   const failures: { path: string; message: string }[] = [];
@@ -274,6 +280,9 @@ export async function moveLegacyLayout(vault: VaultAdapter): Promise<LayoutMoveR
     }
   }
 
+  const result: LayoutMoveResult = { moved, conflicts: plan.conflicts };
+  onMoved?.(result);
+
   if (failures.length > 0) {
     const first = failures[0]!;
     throw new VaultWriteError(
@@ -282,7 +291,7 @@ export async function moveLegacyLayout(vault: VaultAdapter): Promise<LayoutMoveR
         `(${first.path}: ${first.message}). Nothing was downloaded; the next sync retries.`,
     );
   }
-  return { moved, conflicts: plan.conflicts };
+  return result;
 }
 
 /**
@@ -374,8 +383,9 @@ export async function syncOnce(deps: SyncDeps): Promise<SyncResult> {
 
   throwIfAborted(signal);
   // Before the cursor: the rescan and every `decideAction` must see the notes
-  // where `pathForPage` now puts them (spec 2026-09-27).
-  const layout = await moveLegacyLayout(vault);
+  // where `pathForPage` now puts them (spec 2026-09-27). `onLayoutMoved` hears
+  // about the move here, before the download or a cancel can throw it away.
+  const layout = await moveLegacyLayout(vault, deps.onLayoutMoved);
   throwIfAborted(signal);
   const since = await resolveCursor(vault, deps.cachedCursor, deps.pendingFullResync);
 

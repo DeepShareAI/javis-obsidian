@@ -798,6 +798,30 @@ describe('syncOnce', () => {
     expect(vault.files.has('Javis-wiki/Concepts/Agent-Builder.md')).toBe(false);
   });
 
+  it('reports the move to onLayoutMoved even when the download then fails (review)', async () => {
+    const vault = new FakeVault();
+    vault.seed('Concepts/Agent-Builder.md', javisFm('concept', 'Agent-Builder'));
+    const api = new FakeApi([{ pages: [page()], serverTime: '2026-09-13T06:00:00Z' }]);
+    api.throwQueue.push(new HttpError(503, 'Service Unavailable'));
+    const onLayoutMoved = vi.fn();
+
+    await expect(syncOnce(deps({ api, vault, onLayoutMoved }))).rejects.toBeInstanceOf(HttpError);
+    expect(onLayoutMoved).toHaveBeenCalledTimes(1);
+    expect(onLayoutMoved).toHaveBeenCalledWith({ moved: 1, conflicts: [] });
+  });
+
+  it('reports the moves that succeeded to onLayoutMoved when another move fails (review)', async () => {
+    const vault = new FakeVault();
+    vault.seed('Concepts/A.md', javisFm('concept', 'A'));
+    vault.seed('Concepts/B.md', javisFm('concept', 'B'));
+    vault.failWrites.add('Concepts/A.md');
+    const api = new FakeApi([{ pages: [], serverTime: '2026-09-13T06:00:00Z' }]);
+    const onLayoutMoved = vi.fn();
+
+    await expect(syncOnce(deps({ api, vault, onLayoutMoved }))).rejects.toBeInstanceOf(VaultWriteError);
+    expect(onLayoutMoved).toHaveBeenCalledWith({ moved: 1, conflicts: [] });
+  });
+
   it('recovers the cursor from moved notes when data.json is gone (Review Focus 4)', async () => {
     const vault = new FakeVault();
     vault.seed('Concepts/Agent-Builder.md', javisFm('concept', 'Agent-Builder', '2026-09-20T00:00:00Z'));
