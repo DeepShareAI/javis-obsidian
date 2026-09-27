@@ -44,6 +44,11 @@ class FakeVault implements VaultAdapter {
   readonly failWrites = new Set<string>();
   /** Paths the metadata cache has not indexed yet: `listMarkdownFiles` reports no frontmatter. */
   readonly uncached = new Set<string>();
+  /**
+   * Folders whose removal throws a plain Error, as Obsidian's `vault.delete` does
+   * on a folder that still holds a `.DS_Store` it does not list as a child.
+   */
+  readonly failRmdir = new Set<string>();
 
   seed(path: string, frontmatter: Frontmatter | null, content = ''): void {
     this.files.set(path, { content, frontmatter });
@@ -104,6 +109,7 @@ class FakeVault implements VaultAdapter {
 
   async removeFolderIfEmpty(path: string): Promise<void> {
     this.calls.push(`rmdir-if-empty ${path}`);
+    if (this.failRmdir.has(path)) throw new Error(`ENOTEMPTY: directory not empty, rmdir '${path}'`);
   }
 
   #guard(path: string): void {
@@ -410,7 +416,7 @@ describe('syncOnce', () => {
     // The FIRST batch's watermark, never a later one: a later value would sit
     // above rows committed between batch 1 and batch N.
     expect(result.nextCursor).toBe('2026-09-13T06:00:00Z');
-    expect(api.sinceSeen).toEqual([null]);
+    expect(api.sinceSeen).toHaveLength(1);
     expect([...vault.files.keys()]).toEqual([
       'Javis-wiki/Concepts/Agent-Builder.md',
       'Javis-wiki/Concepts/RAG.md',
@@ -559,7 +565,7 @@ describe('syncOnce', () => {
     api.throwQueue.push(new HttpError(400, 'bad limit'));
 
     await expect(syncOnce(deps({ api, vault: new FakeVault() }))).rejects.toBeInstanceOf(HttpError);
-    expect(api.sinceSeen).toEqual([null]);
+    expect(api.sinceSeen).toHaveLength(1);
   });
 
   it('retries a 400 at most once', async () => {
@@ -747,7 +753,7 @@ describe('syncOnce', () => {
 
     const result = await syncOnce(deps({ api, vault, pendingFullResync: true }));
 
-    expect(api.sinceSeen).toEqual([null]);
+    expect(api.sinceSeen).toHaveLength(1);
     expect(result.failures).toEqual([]);
     expect(result.pendingFullResync).toBe(false);
     expect(result.nextCursor).toBe('2026-09-13T06:00:00Z');
@@ -785,6 +791,26 @@ describe('syncOnce', () => {
       'rename Concepts/Agent-Builder.md -> Javis-wiki/Concepts/Agent-Builder.md',
       'rmdir-if-empty Concepts',
     ]);
+  });
+
+  it('still reports the move and downloads when removing the emptied folder throws (review)', async () => {
+    const vault = new FakeVault();
+    const p = page();
+    vault.seed('Concepts/Agent-Builder.md', javisFm('concept', 'Agent-Builder', p.updated_at), 'body');
+    vault.failRmdir.add('Concepts');
+    const api = new FakeApi([{ pages: [p], serverTime: '2026-09-13T06:00:00Z' }]);
+    const onLayoutMoved = vi.fn();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const result = await syncOnce(deps({ api, vault, onLayoutMoved }));
+
+    expect(result.moved).toBe(1);
+    expect(result.moveConflicts).toEqual([]);
+    expect(onLayoutMoved).toHaveBeenCalledWith({ moved: 1, conflicts: [] });
+    expect(api.sinceSeen).toHaveLength(1);
+    expect(vault.files.has('Javis-wiki/Concepts/Agent-Builder.md')).toBe(true);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('Concepts'), expect.any(Error));
+    warn.mockRestore();
   });
 
   it('downloads nothing when a move fails', async () => {
@@ -960,6 +986,24 @@ describe('moveLegacyLayout', () => {
     expect(vault.files.has('Javis-wiki/Concepts/A.md')).toBe(true);
     expect(vault.files.has('Concepts/mine.md')).toBe(true);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('Concepts/mine.md'), expect.anything());
+    warn.mockRestore();
+  });
+
+  it('logs and ignores a folder removal that throws, e.g. a leftover .DS_Store (review)', async () => {
+    const vault = new FakeVault();
+    vault.seed('Concepts/A.md', javisFm('concept', 'A'));
+    vault.failRmdir.add('Concepts');
+    const onMoved = vi.fn();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    expect(await moveLegacyLayout(vault, onMoved)).toEqual({ moved: 1, conflicts: [] });
+    expect(onMoved).toHaveBeenCalledWith({ moved: 1, conflicts: [] });
+    expect(vault.files.has('Javis-wiki/Concepts/A.md')).toBe(true);
+    expect(vault.calls).toContain('rmdir-if-empty Concepts');
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('could not remove the emptied folder Concepts'),
+      expect.any(Error),
+    );
     warn.mockRestore();
   });
 
