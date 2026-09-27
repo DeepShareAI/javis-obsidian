@@ -8,6 +8,15 @@
  */
 
 /**
+ * The one vault folder every wiki page lives under (spec 2026-09-27, D1).
+ *
+ * Fixed, not a setting: the upload guard (src/core/folders.ts) and the 0.2.x
+ * layout move (src/core/layout-move.ts) both need to know it without asking,
+ * and a renameable folder would need a second migration every time it moved.
+ */
+export const WIKI_ROOT = 'Javis-wiki';
+
+/**
  * Inverse of `PLURAL_TO_TYPE` in app/tools/wiki/links.py.
  *
  * Copied rather than fetched: the folder names are also the link prefixes
