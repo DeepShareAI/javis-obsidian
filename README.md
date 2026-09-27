@@ -94,7 +94,9 @@ Javis-wiki/
   Questions/  Syntheses/  Decisions/  Gaps/
 ```
 
-A subfolder is created only when a page needs it.
+A subfolder is created only when a page needs it. If the vault already has
+one of these folders spelled in another case (`javis-wiki/`, say), the plugin
+writes into that folder instead of failing to create a second one.
 
 Page bodies contain links such as `[[Concepts/Foo]]` literally. Obsidian
 resolves a link path by its ending, so that link finds

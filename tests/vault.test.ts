@@ -25,6 +25,7 @@ import {
   maxRevision,
   parentFolder,
   parseFrontmatterBlock,
+  resolveFolderCase,
 } from '../src/shell/vault';
 
 describe('MANAGED_FOLDERS', () => {
@@ -92,6 +93,34 @@ describe('folderAncestors', () => {
 
   it('drops empty segments rather than inventing a folder named ""', () => {
     expect(folderAncestors('A//B/note.md')).toEqual(['A', 'A/B']);
+  });
+});
+
+describe('resolveFolderCase (review: a differently-cased Javis-wiki folder)', () => {
+  // A tiny folder tree: parent real path ('' = vault root) -> child folder names.
+  const tree = (folders: Record<string, string[]>) => (parent: string) => folders[parent] ?? [];
+
+  it('uses an existing folder whose name differs only in case', () => {
+    // On APFS/NTFS `createFolder('Javis-wiki')` throws "Folder already exists."
+    // when `javis-wiki` is there, and the exact-case lookup never finds it.
+    const children = tree({ '': ['javis-wiki'], 'javis-wiki': ['concepts'] });
+    expect(resolveFolderCase('Javis-wiki/Concepts/Foo.md', children)).toBe('javis-wiki/concepts/Foo.md');
+  });
+
+  it('keeps the rest of the path as given once a folder does not exist yet', () => {
+    const children = tree({ '': ['javis-wiki'] });
+    expect(resolveFolderCase('Javis-wiki/Concepts/Foo.md', children)).toBe('javis-wiki/Concepts/Foo.md');
+  });
+
+  it('prefers the exact spelling when both exist (a case-sensitive volume)', () => {
+    const children = tree({ '': ['javis-wiki', 'Javis-wiki'], 'Javis-wiki': ['Concepts'] });
+    expect(resolveFolderCase('Javis-wiki/Concepts/Foo.md', children)).toBe('Javis-wiki/Concepts/Foo.md');
+  });
+
+  it('leaves the file name and root-level paths alone', () => {
+    const children = tree({ '': ['foo.md'] });
+    expect(resolveFolderCase('Foo.md', children)).toBe('Foo.md');
+    expect(resolveFolderCase('Javis-wiki/Concepts/Foo.md', tree({}))).toBe('Javis-wiki/Concepts/Foo.md');
   });
 });
 

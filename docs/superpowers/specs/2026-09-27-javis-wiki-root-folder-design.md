@@ -32,6 +32,7 @@ place: the Javis notes already at the root are moved, not duplicated.
 | D4 | Page bodies and the server are unchanged. Links stay `[[Concepts/Foo]]`. | Obsidian resolves a link path by suffix match, so `[[Concepts/Foo]]` resolves to `Javis-wiki/Concepts/Foo.md`. Verified by manual E2E step 3. |
 | D5 | No forced full resync after the move. | Moved files sit exactly where the new `pathForPage` looks, so ordinary deltas reconcile against them. |
 | D6 | The upload folder guard protects `Javis-wiki/**` instead of the nine root names. | `src/core/upload.ts` already refuses any note carrying `javis_slug`/`javis_type`, so a stray Javis note elsewhere cannot loop. The nine root names become free for the user's own folders. |
+| D7 | An existing folder whose name differs only in case (`javis-wiki`, `Javis-wiki/concepts`) is used as-is: the vault adapter resolves each folder segment of a path to the vault's existing spelling before it reads, creates or moves (`resolveFolderCase`, review). | APFS and NTFS treat `javis-wiki` as `Javis-wiki`, so `createFolder('Javis-wiki')` throws "Folder already exists." while Obsidian's exact-case lookup finds nothing; without this every move and create fails on every sync. |
 
 ## What changes
 

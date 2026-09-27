@@ -143,6 +143,46 @@ export function folderAncestors(path: string): string[] {
 }
 
 /**
+ * `path` with each folder segment spelled as the vault already spells it.
+ *
+ * Review: Obsidian's `getFolderByPath` / `getFileByPath` are exact, case-
+ * sensitive lookups, but APFS and NTFS are not. A vault holding `javis-wiki`
+ * (made by hand, or a case-only rename of `Javis-wiki` in the file explorer)
+ * made `createFolder('Javis-wiki')` throw "Folder already exists." while the
+ * exact lookup still found nothing, so every move and every create failed on
+ * every sync. Resolving to the existing spelling writes into that folder
+ * instead.
+ *
+ * `childFolders(parent)` lists the folder names directly inside the real
+ * folder `parent` (`''` is the vault root). The exact spelling wins when it
+ * exists, so a case-sensitive volume holding both keeps the canonical one.
+ * Once a segment has no match, it and everything below it are new folders and
+ * are kept as given. The file name is never touched.
+ */
+export function resolveFolderCase(
+  path: string,
+  childFolders: (parent: string) => readonly string[],
+): string {
+  const folder = parentFolder(path);
+  if (folder === null) return path;
+  const segments = folder.split('/').filter((segment) => segment !== '');
+  let real = '';
+  let i = 0;
+  for (; i < segments.length; i += 1) {
+    const segment = segments[i]!;
+    const names = childFolders(real);
+    const match = names.includes(segment)
+      ? segment
+      : names.find((name) => name.toLowerCase() === segment.toLowerCase());
+    if (match === undefined) break;
+    real = real === '' ? match : `${real}/${match}`;
+  }
+  const rest = segments.slice(i);
+  const resolved = [real, ...rest].filter((part) => part !== '').join('/');
+  return `${resolved}/${path.slice(path.lastIndexOf('/') + 1)}`;
+}
+
+/**
  * The YAML text of a note's frontmatter block, or null when there is none.
  *
  * Obsidian's rule, reproduced deliberately rather than approximated: the block
@@ -381,7 +421,8 @@ export class ObsidianVaultAdapter implements VaultAdapter, UploadVault {
    * the parent is missing — and a fresh vault has none of the nine §E folders,
    * so without this every single create on a first sync would fail.
    */
-  async create(path: string, content: string): Promise<void> {
+  async create(requested: string, content: string): Promise<void> {
+    const path = this.#resolve(requested);
     await this.#ensureFolders(path);
     try {
       await this.#app.vault.create(path, content);
@@ -488,8 +529,9 @@ export class ObsidianVaultAdapter implements VaultAdapter, UploadVault {
    * the user answers it. `vault.rename` never touches links; `[[Concepts/Foo]]`
    * still resolves to `Javis-wiki/Concepts/Foo.md` by suffix (spec D4).
    */
-  async rename(from: string, to: string): Promise<void> {
+  async rename(from: string, requestedTo: string): Promise<void> {
     const file = this.#require(from);
+    const to = this.#resolve(requestedTo);
     if (this.#app.vault.getAbstractFileByPath(to) !== null) {
       throw new VaultWriteError(from, `Could not move ${from}: ${to} already exists`);
     }
@@ -563,7 +605,19 @@ export class ObsidianVaultAdapter implements VaultAdapter, UploadVault {
   // -- internals ------------------------------------------------------------
 
   #find(path: string): TFile | null {
-    return this.#app.vault.getFileByPath(path);
+    return this.#app.vault.getFileByPath(this.#resolve(path));
+  }
+
+  /** `resolveFolderCase` over the live folder tree. */
+  #resolve(path: string): string {
+    const vault = this.#app.vault;
+    return resolveFolderCase(path, (parent) => {
+      const folder = parent === '' ? vault.getRoot() : vault.getFolderByPath(parent);
+      if (folder === null) return [];
+      // A TFolder has `children`; a TFile does not. No `instanceof`: `obsidian`
+      // is not loadable at import time (decision 2 in the module comment).
+      return folder.children.filter((child) => 'children' in child).map((child) => child.name);
+    });
   }
 
   #require(path: string): TFile {
