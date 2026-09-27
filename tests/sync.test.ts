@@ -902,6 +902,24 @@ describe('moveLegacyLayout', () => {
     expect(vault.files.has('Concepts/mine.md')).toBe(true);
   });
 
+  it('skips a root note it cannot read instead of failing the whole sync (review)', async () => {
+    const vault = new FakeVault();
+    vault.seed('Concepts/A.md', javisFm('concept', 'A'));
+    vault.seed('Concepts/mine.md', null, 'my own note');
+    const realRead = vault.readFrontmatter.bind(vault);
+    vi.spyOn(vault, 'readFrontmatter').mockImplementation(async (path: string) => {
+      if (path === 'Concepts/mine.md') throw new Error('EACCES: permission denied');
+      return realRead(path);
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    expect(await moveLegacyLayout(vault)).toEqual({ moved: 1, conflicts: [] });
+    expect(vault.files.has('Javis-wiki/Concepts/A.md')).toBe(true);
+    expect(vault.files.has('Concepts/mine.md')).toBe(true);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('Concepts/mine.md'), expect.anything());
+    warn.mockRestore();
+  });
+
   it('does nothing on a vault that is already migrated', async () => {
     const vault = new FakeVault();
     vault.seed('Javis-wiki/Concepts/A.md', javisFm('concept', 'A'));

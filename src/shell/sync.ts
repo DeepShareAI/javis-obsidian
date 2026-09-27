@@ -224,6 +224,10 @@ export interface LayoutMoveResult {
  * caller downloads nothing this run: a download would `create` the unmoved
  * page at its new path. The next sync retries the move.
  *
+ * A root note that cannot be read at all (no permission, a cloud placeholder
+ * that will not download) is logged and skipped: most notes in these folders
+ * are the user's own, and one unreadable file must not stop every sync.
+ *
  * Only a root folder that lost a note this run is offered to
  * `removeFolderIfEmpty`; a failure there is logged and ignored.
  */
@@ -233,8 +237,17 @@ export async function moveLegacyLayout(vault: VaultAdapter): Promise<LayoutMoveR
   const failures: { path: string; message: string }[] = [];
   for (const note of listed) {
     if (legacyDestination(note.path) === null) continue;
-    const frontmatter = await vault.readFrontmatter(note.path);
-    if (frontmatter === null && isWikiPageText((await vault.read(note.path)) ?? '')) {
+    let frontmatter: LayoutCandidate['frontmatter'];
+    let brokenWikiPage: boolean;
+    try {
+      frontmatter = await vault.readFrontmatter(note.path);
+      brokenWikiPage = frontmatter === null && isWikiPageText((await vault.read(note.path)) ?? '');
+    } catch (error) {
+      // Most notes here are the user's own; one unreadable file must not stop every sync.
+      console.warn(`Javis: could not read ${note.path} to check whether it is a Javis note; skipped`, error);
+      continue;
+    }
+    if (brokenWikiPage) {
       failures.push({ path: note.path, message: 'its properties (YAML) do not parse; fix them so it can move' });
       continue;
     }

@@ -131,6 +131,7 @@ root, config folder, hidden, duplicate and nesting rules are unchanged.
 |------|-----------|
 | A `rename` throws (file locked, I/O error) | The remaining moves still run. The sync then **stops before the download** and reports through the existing sync-failure notice. Continuing would let `create` write the page at its new path, leaving a permanent root/new-path conflict. The next sync retries. |
 | A root note's frontmatter block will not parse, but it has a top-level `javis_slug:`/`javis_type:` line (hand-broken YAML) | Treated as a failed move: the other moves still run, then the sync **stops before the download** and the failure notice names the note. Skipping it would let `create` write a second copy under `Javis-wiki/`. Once the user fixes its YAML, the next sync moves it. |
+| A root note cannot be read at all (no permission, a cloud placeholder that fails to download) | Logged to the console and skipped; the other moves and the download continue. Most notes in these folders are the user's own, and one unreadable file must not stop every sync. If it was a Javis note it stays at the root; once readable, the next sync moves it or reports it as a conflict. |
 | Destination already exists | Root file left in place, reported as a conflict. Sync continues and updates the `Javis-wiki/` copy. The user picks which copy to keep. |
 | `removeFolderIfEmpty` throws | Logged and ignored; an empty folder is harmless and the next sync retries. |
 | Nothing to move | Steady state. Only the folder listing runs, with no notice. |
