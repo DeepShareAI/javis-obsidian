@@ -14,12 +14,12 @@ markers, and **never deletes a file**.
 
 > **Try it on a scratch vault first.**
 > Create an empty vault, connect it, let it sync, and look at what landed. This
-> plugin writes into nine folders at the root of whatever vault it is enabled
-> in, and if you already use those folder names for your own notes, its files
-> will land beside yours. It cannot delete anything — there is no call to
-> `vault.delete` or `vault.trash` anywhere in it — but "cannot delete" is not
-> the same as "cannot surprise you". Back up any vault you care about before
-> pointing this at it.
+> plugin writes into a `Javis-wiki/` folder of whatever vault it is enabled
+> in, and if you already use that folder name for your own notes, its files
+> will land beside yours. It never deletes a note: its only removal is an
+> empty 0.2.x wiki folder (such as `Concepts/`) after its notes have been moved
+> into `Javis-wiki/`. But "never deletes a note" is not the same as "cannot
+> surprise you". Back up any vault you care about before pointing this at it.
 
 ## Requirements
 
@@ -86,23 +86,38 @@ shared vault), syncing stops and asks you to change it back or reconnect.
 
 ## What it creates
 
-Nine folders, at the **root** of the vault, one per page type:
+One folder, `Javis-wiki/`, with a subfolder per page type:
 
 ```
-Sources/  Entities/  Concepts/  Topics/  Comparisons/
-Questions/  Syntheses/  Decisions/  Gaps/
+Javis-wiki/
+  Sources/  Entities/  Concepts/  Topics/  Comparisons/
+  Questions/  Syntheses/  Decisions/  Gaps/
 ```
 
-Root placement is not a style choice. Page bodies contain `[[Concepts/Foo]]`
-literally, and Obsidian resolves that path from the vault root. Put the tree
-one folder deeper and every link in every note would have to be rewritten on
-every sync.
+A subfolder is created only when a page needs it. If the vault already has
+one of these folders spelled in another case (`javis-wiki/`, say), the plugin
+writes into that folder instead of failing to create a second one.
 
-A folder is created only when a page needs it.
+Page bodies contain links such as `[[Concepts/Foo]]` literally. Obsidian
+resolves a link path by its ending, so that link finds
+`Javis-wiki/Concepts/Foo.md`. The plugin never rewrites links, and the
+upgrade moves notes without asking Obsidian to update links to them, so no
+"Update links?" prompt appears and your own `[[Concepts/Foo]]` links stay as
+they are and keep resolving.
+
+**Upgrading from 0.2.x.** Earlier versions wrote the nine folders at the
+vault root. The first sync after upgrading moves every Javis note from those
+folders into `Javis-wiki/`, including notes you edited or adopted. Your own
+notes in those folders stay where they are, including notes you upload
+(any note with a `javis_source_id`). A root wiki folder is removed once it
+is completely empty (no files, hidden or not); a later sync retries if it
+could not be removed the first time. If `Javis-wiki/` already has a note with the same
+name, the root copy is left alone and Sync now tells you. Downgrading to
+0.2.x writes a fresh copy of the wiki at the vault root.
 
 ## What a synced note looks like
 
-`Concepts/Agent-Builder.md`:
+`Javis-wiki/Concepts/Agent-Builder.md`:
 
 ```markdown
 ---
@@ -205,8 +220,8 @@ page.
    example, `Journal` uploads every note in `Journal/` and its subfolders. You
    can add several folders.
 
-   You cannot pick the vault root, `.obsidian/`, one of the nine wiki folders,
-   or a folder inside one. Two picked folders cannot be inside each other.
+   You cannot pick the vault root, `.obsidian/`, `Javis-wiki/`, or a folder
+   inside one of them. Two picked folders cannot be inside each other.
 3. **Allow uploads.** If you connected before choosing a folder, your sign-in
    is read-only. Click **Reconnect to allow uploads**. Your browser opens and
    you sign in to Javis. The consent screen lists an extra, optional
@@ -222,8 +237,8 @@ page.
    in the background, one at a time, a batch about once a minute, within an
    hourly limit per account. A handful of notes is done in minutes; a large
    first upload of hundreds of notes can take hours. New and updated pages
-   arrive in the nine wiki folders on a later sync. Each uploaded note also
-   gets its own source page, `Sources/obsidian-note-<id>.md`.
+   arrive in `Javis-wiki/` on a later sync. Each uploaded note also
+   gets its own source page, `Javis-wiki/Sources/obsidian-note-<id>.md`.
 
 From then on, just write. An edited note is uploaded again on the next sync.
 Turn on **Upload when a note is edited** to upload 2 minutes after you stop
@@ -279,8 +294,8 @@ the last upload:
 **What is sent.** The full text of every `.md` note in the folders you select,
 including subfolders — body and properties, except the plugin's own
 `javis_*` lines — plus each note's path and title. Nothing outside those
-folders: not attachments, canvases, or any other file, and never the nine wiki
-folders, the vault root, or `.obsidian/`, which cannot be selected.
+folders: not attachments, canvases, or any other file, and never
+`Javis-wiki/`, the vault root, or `.obsidian/`, which cannot be selected.
 
 **Where it goes.** To your Javis server (the **Javis server** setting, by
 default `https://mcp.javis.is`), over HTTPS, with your own sign-in. (The plugin
@@ -360,8 +375,9 @@ you allow uploads says the same thing as this section.
 Upload anything outside the folders you select, including attachments and
 canvases. Write back edits you make to the generated wiki notes. Sync
 transcripts, daily notes, or skill data. Create stub notes for links that point
-nowhere. Delete, trash, or rename a file. Run on mobile. Run while Obsidian is
-closed.
+nowhere. Delete or trash a file, or rename one (apart from the one-time move of
+0.2.x wiki notes into `Javis-wiki/` on upgrade). Run on mobile. Run while
+Obsidian is closed.
 
 ## Developing
 

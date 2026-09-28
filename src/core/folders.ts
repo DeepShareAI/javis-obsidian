@@ -11,16 +11,17 @@
  *
  * 1. **Not the root.** Selecting the root would upload the nine wiki folders
  *    too, i.e. feed Javis its own output — the loop §A rules out.
- * 2. **Not a wiki folder or inside one.** Same loop, one folder at a time. The
- *    names come from `TYPE_TO_PLURAL`, the same map the download writes with,
- *    compared case-INsensitively: on the default macOS (APFS) and Windows
- *    (NTFS) volumes a user's `sources` folder is the very directory the
- *    download writes `Sources/…` into, and Obsidian may list those pages
- *    under either spelling. (An earlier revision compared case-sensitively,
- *    "because that is how the download creates them"; review showed that lets
- *    the wiki's own pages be uploaded back.) Every other comparison here —
- *    the config folder, duplicates, nesting — is case-insensitive for the
- *    same reason; on a case-sensitive volume that only refuses a selection.
+ * 2. **Not `Javis-wiki` or inside it.** That is where the download writes
+ *    (src/core/slug.ts `WIKI_ROOT`), so uploading it would feed Javis its own
+ *    output — the loop §A rules out. Compared case-INsensitively: on the
+ *    default macOS (APFS) and Windows (NTFS) volumes a user's `javis-wiki`
+ *    folder is the very directory the download writes into. The nine page-type
+ *    names at the vault root are the user's again since 0.3.0; a stray Javis
+ *    note anywhere else is still refused per file by src/core/upload.ts (a
+ *    note carrying `javis_slug`/`javis_type` is never sent). Every other
+ *    comparison here — the config folder, duplicates, nesting — is
+ *    case-insensitive for the same reason; on a case-sensitive volume that
+ *    only refuses a selection.
  * 3. **Not the config folder.** Plugin data, workspace state and (for this
  *    plugin) `data.json` live there. `configDir` is a parameter because a vault
  *    can rename it.
@@ -31,7 +32,7 @@
  *    never listed looks deleted to the delete guards.
  */
 
-import { TYPE_TO_PLURAL } from './slug';
+import { WIKI_ROOT } from './slug';
 
 /** Trim, drop leading and trailing `/`, collapse `//`. `''` is the vault root. */
 export function normalizeFolder(folder: string): string {
@@ -63,8 +64,6 @@ export interface FolderValidation {
   ok: string[];
   errors: FolderError[];
 }
-
-const WIKI_FOLDERS: readonly string[] = [...new Set(Object.values(TYPE_TO_PLURAL))];
 
 /**
  * Validate a whole selection at once, because nesting and duplicates are
@@ -99,9 +98,8 @@ export function validateFolders(folders: readonly string[], configDir: string): 
       fail("Obsidian's settings folder cannot be uploaded.");
       continue;
     }
-    const wiki = WIKI_FOLDERS.find((w) => isSameOrUnder(key, fold(w)));
-    if (wiki !== undefined) {
-      fail(`${wiki} is one of the wiki folders Javis writes; it cannot be uploaded back.`);
+    if (isSameOrUnder(key, fold(WIKI_ROOT))) {
+      fail(`${WIKI_ROOT} is the folder Javis writes; it cannot be uploaded back.`);
       continue;
     }
     if (folder.split('/').some((segment) => segment.startsWith('.'))) {

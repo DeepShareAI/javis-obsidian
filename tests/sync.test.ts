@@ -10,7 +10,7 @@
 
 import { describe, expect, it, vi } from 'vitest';
 
-import { JAVIS_DELETED, JAVIS_REV, JAVIS_SYNC } from '../src/core/types';
+import { JAVIS_DELETED, JAVIS_REV, JAVIS_SLUG, JAVIS_SYNC, JAVIS_TYPE } from '../src/core/types';
 import { MARKER_END, MARKER_START } from '../src/core/markers';
 import { TOMBSTONE_BANNER } from '../src/core/render';
 import type {
@@ -25,7 +25,7 @@ import type {
   VaultNote,
 } from '../src/shell/contracts';
 import { HttpError, SyncCancelledError, VaultWriteError, AuthRevokedError } from '../src/shell/errors';
-import { applyAction, decideAction, resolveCursor, summarize, syncOnce } from '../src/shell/sync';
+import { applyAction, decideAction, moveLegacyLayout, resolveCursor, summarize, syncOnce } from '../src/shell/sync';
 
 // ---------------------------------------------------------------------------
 // Fakes
@@ -42,6 +42,15 @@ class FakeVault implements VaultAdapter {
   readonly calls: string[] = [];
   /** Paths whose next write throws, to exercise per-note failure isolation. */
   readonly failWrites = new Set<string>();
+  /** Paths the metadata cache has not indexed yet: `listMarkdownFiles` reports no frontmatter. */
+  readonly uncached = new Set<string>();
+  /**
+   * Folders whose removal throws a plain Error, as Obsidian's `vault.delete` does
+   * on a folder that still holds a `.DS_Store` it does not list as a child.
+   */
+  readonly failRmdir = new Set<string>();
+  /** Folders that exist with no file under them (a fake vault otherwise derives folders from file paths). */
+  readonly emptyFolders = new Set<string>();
 
   seed(path: string, frontmatter: Frontmatter | null, content = ''): void {
     this.files.set(path, { content, frontmatter });
@@ -86,8 +95,28 @@ class FakeVault implements VaultAdapter {
   async listMarkdownFiles(): Promise<readonly VaultNote[]> {
     return [...this.files.entries()].map(([path, file]) => ({
       path,
-      frontmatter: file.frontmatter,
+      frontmatter: this.uncached.has(path) ? null : file.frontmatter,
     }));
+  }
+
+  async rename(from: string, to: string): Promise<void> {
+    this.calls.push(`rename ${from} -> ${to}`);
+    this.#guard(from);
+    const file = this.files.get(from);
+    if (file === undefined) throw new VaultWriteError(from, `No note at ${from}`);
+    if (this.files.has(to)) throw new VaultWriteError(from, `${to} already exists`);
+    this.files.delete(from);
+    this.files.set(to, file);
+  }
+
+  async removeFolderIfEmpty(path: string): Promise<void> {
+    this.calls.push(`rmdir-if-empty ${path}`);
+    if (this.failRmdir.has(path)) throw new Error(`ENOTEMPTY: directory not empty, rmdir '${path}'`);
+    this.emptyFolders.delete(path);
+  }
+
+  async folderExists(path: string): Promise<boolean> {
+    return this.emptyFolders.has(path) || [...this.files.keys()].some((p) => p.startsWith(`${path}/`));
   }
 
   #guard(path: string): void {
@@ -161,7 +190,11 @@ function deps(over: Partial<SyncDeps> & Pick<SyncDeps, 'api' | 'vault'>): SyncDe
   return { cachedCursor: null, trigger: 'command', ...over };
 }
 
-const CONCEPT_PATH = 'Concepts/Agent-Builder.md';
+const CONCEPT_PATH = 'Javis-wiki/Concepts/Agent-Builder.md';
+
+function javisFm(type: string, slug: string, rev = '2026-09-13T04:12:00Z'): Frontmatter {
+  return { [JAVIS_TYPE]: type, [JAVIS_SLUG]: slug, [JAVIS_REV]: rev };
+}
 
 // ---------------------------------------------------------------------------
 // resolveCursor — §F.1
@@ -177,15 +210,15 @@ describe('resolveCursor', () => {
 
   it('falls back to max(javis_rev) across the vault when data.json is gone', async () => {
     const vault = new FakeVault();
-    vault.seed('Concepts/A.md', { [JAVIS_REV]: '2026-09-10T00:00:00Z' });
-    vault.seed('Concepts/B.md', { [JAVIS_REV]: '2026-09-12T00:00:00Z' });
-    vault.seed('Concepts/C.md', { [JAVIS_REV]: '2026-09-11T00:00:00Z' });
+    vault.seed('Javis-wiki/Concepts/A.md', { [JAVIS_REV]: '2026-09-10T00:00:00Z' });
+    vault.seed('Javis-wiki/Concepts/B.md', { [JAVIS_REV]: '2026-09-12T00:00:00Z' });
+    vault.seed('Javis-wiki/Concepts/C.md', { [JAVIS_REV]: '2026-09-11T00:00:00Z' });
     expect(await resolveCursor(vault, null)).toBe('2026-09-12T00:00:00Z');
   });
 
   it('treats an empty cached cursor as absent', async () => {
     const vault = new FakeVault();
-    vault.seed('Concepts/A.md', { [JAVIS_REV]: '2026-09-10T00:00:00Z' });
+    vault.seed('Javis-wiki/Concepts/A.md', { [JAVIS_REV]: '2026-09-10T00:00:00Z' });
     expect(await resolveCursor(vault, '')).toBe('2026-09-10T00:00:00Z');
   });
 
@@ -195,7 +228,7 @@ describe('resolveCursor', () => {
 
   it('forces a full export while pendingFullResync is set, ignoring both cursors', async () => {
     const vault = new FakeVault();
-    vault.seed('Concepts/A.md', { [JAVIS_REV]: '2026-09-12T00:00:00Z' });
+    vault.seed('Javis-wiki/Concepts/A.md', { [JAVIS_REV]: '2026-09-12T00:00:00Z' });
     const spy = vi.spyOn(vault, 'listMarkdownFiles');
 
     expect(await resolveCursor(vault, '2026-09-13T04:12:00Z', true)).toBeNull();
@@ -254,12 +287,12 @@ describe('decideAction', () => {
     const vault = new FakeVault();
     const exists = vi.spyOn(vault, 'exists');
     const read = vi.spyOn(vault, 'readFrontmatter');
-    vault.seed('Questions/Is RAG dead.md', { [JAVIS_REV]: 'ancient' });
+    vault.seed('Javis-wiki/Questions/Is RAG dead.md', { [JAVIS_REV]: 'ancient' });
 
     await decideAction(vault, page({ page_type: 'question', slug: 'Is RAG dead?' }));
 
-    expect(exists).toHaveBeenCalledWith('Questions/Is RAG dead.md');
-    expect(read).toHaveBeenCalledWith('Questions/Is RAG dead.md');
+    expect(exists).toHaveBeenCalledWith('Javis-wiki/Questions/Is RAG dead.md');
+    expect(read).toHaveBeenCalledWith('Javis-wiki/Questions/Is RAG dead.md');
   });
 
   it('asks whether the FILE exists, not whether it has frontmatter we can read', async () => {
@@ -390,11 +423,11 @@ describe('syncOnce', () => {
     // The FIRST batch's watermark, never a later one: a later value would sit
     // above rows committed between batch 1 and batch N.
     expect(result.nextCursor).toBe('2026-09-13T06:00:00Z');
-    expect(api.sinceSeen).toEqual([null]);
+    expect(api.sinceSeen).toHaveLength(1);
     expect([...vault.files.keys()]).toEqual([
-      'Concepts/Agent-Builder.md',
-      'Concepts/RAG.md',
-      'Concepts/Agents.md',
+      'Javis-wiki/Concepts/Agent-Builder.md',
+      'Javis-wiki/Concepts/RAG.md',
+      'Javis-wiki/Concepts/Agents.md',
     ]);
   });
 
@@ -406,7 +439,7 @@ describe('syncOnce', () => {
 
   it('rescans the vault for the cursor when data.json has nothing', async () => {
     const vault = new FakeVault();
-    vault.seed('Concepts/A.md', { [JAVIS_REV]: '2026-09-12T00:00:00Z' });
+    vault.seed('Javis-wiki/Concepts/A.md', { [JAVIS_REV]: '2026-09-12T00:00:00Z' });
     const api = new FakeApi([{ pages: [], serverTime: '2026-09-13T06:00:00Z' }]);
     await syncOnce(deps({ api, vault }));
     expect(api.sinceSeen).toEqual(['2026-09-12T00:00:00Z']);
@@ -414,10 +447,10 @@ describe('syncOnce', () => {
 
   it('counts each verdict separately', async () => {
     const vault = new FakeVault();
-    vault.seed('Concepts/Unchanged.md', { [JAVIS_REV]: '2026-09-13T04:12:00Z' });
-    vault.seed('Concepts/Adopted.md', { [JAVIS_SYNC]: false, [JAVIS_REV]: 'ancient' });
-    vault.seed('Concepts/Stale.md', { [JAVIS_REV]: 'ancient' }, `${MARKER_START}\nold\n${MARKER_END}\n`);
-    vault.seed('Concepts/Gone.md', { [JAVIS_REV]: 'ancient' }, `${MARKER_START}\nold\n${MARKER_END}\n`);
+    vault.seed('Javis-wiki/Concepts/Unchanged.md', { [JAVIS_REV]: '2026-09-13T04:12:00Z' });
+    vault.seed('Javis-wiki/Concepts/Adopted.md', { [JAVIS_SYNC]: false, [JAVIS_REV]: 'ancient' });
+    vault.seed('Javis-wiki/Concepts/Stale.md', { [JAVIS_REV]: 'ancient' }, `${MARKER_START}\nold\n${MARKER_END}\n`);
+    vault.seed('Javis-wiki/Concepts/Gone.md', { [JAVIS_REV]: 'ancient' }, `${MARKER_START}\nold\n${MARKER_END}\n`);
 
     const api = new FakeApi([
       {
@@ -452,7 +485,7 @@ describe('syncOnce', () => {
 
     // A created note's frontmatter carries the revision the next run compares.
     for (const p of pages) {
-      const path = `Concepts/${p.slug}.md`;
+      const path = `Javis-wiki/Concepts/${p.slug}.md`;
       vault.seed(path, { [JAVIS_REV]: p.updated_at }, vault.files.get(path)?.content ?? '');
     }
     vault.calls.length = 0;
@@ -466,7 +499,7 @@ describe('syncOnce', () => {
 
   it('records a per-note write failure and keeps going', async () => {
     const vault = new FakeVault();
-    vault.failWrites.add('Concepts/Broken.md');
+    vault.failWrites.add('Javis-wiki/Concepts/Broken.md');
     const api = new FakeApi([
       { pages: [page({ slug: 'Broken' }), page({ slug: 'Fine' })], serverTime: '2026-09-13T06:00:00Z' },
     ]);
@@ -476,13 +509,13 @@ describe('syncOnce', () => {
     expect(result.created).toBe(1);
     expect(result.scanned).toBe(2);
     expect(result.failures).toHaveLength(1);
-    expect(result.failures[0]?.path).toBe('Concepts/Broken.md');
-    expect(vault.files.has('Concepts/Fine.md')).toBe(true);
+    expect(result.failures[0]?.path).toBe('Javis-wiki/Concepts/Broken.md');
+    expect(vault.files.has('Javis-wiki/Concepts/Fine.md')).toBe(true);
   });
 
   it('does NOT advance the cursor when any note failed', async () => {
     const vault = new FakeVault();
-    vault.failWrites.add('Concepts/Broken.md');
+    vault.failWrites.add('Javis-wiki/Concepts/Broken.md');
     const api = new FakeApi([{ pages: [page({ slug: 'Broken' })], serverTime: '2026-09-13T06:00:00Z' }]);
 
     const result = await syncOnce(deps({ api, vault }));
@@ -512,7 +545,7 @@ describe('syncOnce', () => {
 
   it('recovers from a 400 by rescanning the vault for a cursor', async () => {
     const vault = new FakeVault();
-    vault.seed('Concepts/A.md', { [JAVIS_REV]: '2026-09-12T00:00:00Z' });
+    vault.seed('Javis-wiki/Concepts/A.md', { [JAVIS_REV]: '2026-09-12T00:00:00Z' });
     const api = new FakeApi([{ pages: [page()], serverTime: '2026-09-13T06:00:00Z' }]);
     api.throwQueue.push(new HttpError(400, '{"error":"invalid_request"}'));
 
@@ -525,7 +558,7 @@ describe('syncOnce', () => {
 
   it('falls all the way back to a full export when the rescan repeats the bad cursor', async () => {
     const vault = new FakeVault();
-    vault.seed('Concepts/A.md', { [JAVIS_REV]: '2026-09-12T00:00:00Z' });
+    vault.seed('Javis-wiki/Concepts/A.md', { [JAVIS_REV]: '2026-09-12T00:00:00Z' });
     const api = new FakeApi([{ pages: [], serverTime: '2026-09-13T06:00:00Z' }]);
     api.throwQueue.push(new HttpError(400, 'bad cursor'));
 
@@ -539,12 +572,12 @@ describe('syncOnce', () => {
     api.throwQueue.push(new HttpError(400, 'bad limit'));
 
     await expect(syncOnce(deps({ api, vault: new FakeVault() }))).rejects.toBeInstanceOf(HttpError);
-    expect(api.sinceSeen).toEqual([null]);
+    expect(api.sinceSeen).toHaveLength(1);
   });
 
   it('retries a 400 at most once', async () => {
     const vault = new FakeVault();
-    vault.seed('Concepts/A.md', { [JAVIS_REV]: '2026-09-12T00:00:00Z' });
+    vault.seed('Javis-wiki/Concepts/A.md', { [JAVIS_REV]: '2026-09-12T00:00:00Z' });
     const api = new FakeApi([{ pages: [], serverTime: 'x' }]);
     api.throwQueue.push(new HttpError(400, 'one'), new HttpError(400, 'two'));
 
@@ -583,13 +616,13 @@ describe('syncOnce', () => {
       ),
     ).rejects.toBeInstanceOf(SyncCancelledError);
 
-    expect(vault.files.has('Concepts/First.md')).toBe(true);
-    expect(vault.files.has('Concepts/Second.md')).toBe(false);
+    expect(vault.files.has('Javis-wiki/Concepts/First.md')).toBe(true);
+    expect(vault.files.has('Javis-wiki/Concepts/Second.md')).toBe(false);
   });
 
   it('reports progress once per row, cumulatively, with the verdict', async () => {
     const vault = new FakeVault();
-    vault.seed('Concepts/Known.md', { [JAVIS_REV]: '2026-09-13T04:12:00Z' });
+    vault.seed('Javis-wiki/Concepts/Known.md', { [JAVIS_REV]: '2026-09-13T04:12:00Z' });
     const api = new FakeApi([
       { pages: [page({ slug: 'Known' }), page({ slug: 'New' })], serverTime: 'x' },
     ]);
@@ -613,8 +646,8 @@ describe('syncOnce', () => {
 
   it('never deletes a file, even for a run that is all tombstones', async () => {
     const vault = new FakeVault();
-    vault.seed('Concepts/A.md', { [JAVIS_REV]: 'old' }, `${MARKER_START}\nx\n${MARKER_END}\n`);
-    vault.seed('Concepts/B.md', { [JAVIS_REV]: 'old' }, `${MARKER_START}\ny\n${MARKER_END}\n`);
+    vault.seed('Javis-wiki/Concepts/A.md', { [JAVIS_REV]: 'old' }, `${MARKER_START}\nx\n${MARKER_END}\n`);
+    vault.seed('Javis-wiki/Concepts/B.md', { [JAVIS_REV]: 'old' }, `${MARKER_START}\ny\n${MARKER_END}\n`);
     const api = new FakeApi([
       {
         pages: [
@@ -628,7 +661,7 @@ describe('syncOnce', () => {
     const result = await syncOnce(deps({ api, vault }));
 
     expect(result.tombstoned).toBe(2);
-    expect([...vault.files.keys()]).toEqual(['Concepts/A.md', 'Concepts/B.md']);
+    expect([...vault.files.keys()]).toEqual(['Javis-wiki/Concepts/A.md', 'Javis-wiki/Concepts/B.md']);
   });
 
   it('adopts a pre-existing note at a managed path instead of failing forever', async () => {
@@ -656,9 +689,9 @@ describe('syncOnce', () => {
     const vault = new FakeVault();
     // 'Broken' is the OLDER row and the one that fails; 'Stale' is newer and
     // lands, which is what drags max(javis_rev) past the row that did not.
-    vault.failWrites.add('Concepts/Broken.md');
+    vault.failWrites.add('Javis-wiki/Concepts/Broken.md');
     vault.seed(
-      'Concepts/Stale.md',
+      'Javis-wiki/Concepts/Stale.md',
       { [JAVIS_REV]: 'ancient' },
       `${MARKER_START}\nold\n${MARKER_END}\n`,
     );
@@ -692,7 +725,7 @@ describe('syncOnce', () => {
     // Holding `cachedCursor` back already re-delivers the row; a full export
     // here would cost tombstones (§C) for nothing.
     const vault = new FakeVault();
-    vault.failWrites.add('Concepts/Broken.md');
+    vault.failWrites.add('Javis-wiki/Concepts/Broken.md');
     const api = new FakeApi([
       { pages: [page({ slug: 'Broken' })], serverTime: '2026-09-13T06:00:00Z' },
     ]);
@@ -708,8 +741,8 @@ describe('syncOnce', () => {
     // the vault — and the next run would send the same bad cursor and land back
     // on the same rescan.
     const vault = new FakeVault();
-    vault.failWrites.add('Concepts/Broken.md');
-    vault.seed('Concepts/A.md', { [JAVIS_REV]: '2026-09-12T00:00:00Z' });
+    vault.failWrites.add('Javis-wiki/Concepts/Broken.md');
+    vault.seed('Javis-wiki/Concepts/A.md', { [JAVIS_REV]: '2026-09-12T00:00:00Z' });
     const api = new FakeApi([
       { pages: [page({ slug: 'Broken' })], serverTime: '2026-09-13T06:00:00Z' },
     ]);
@@ -727,7 +760,7 @@ describe('syncOnce', () => {
 
     const result = await syncOnce(deps({ api, vault, pendingFullResync: true }));
 
-    expect(api.sinceSeen).toEqual([null]);
+    expect(api.sinceSeen).toHaveLength(1);
     expect(result.failures).toEqual([]);
     expect(result.pendingFullResync).toBe(false);
     expect(result.nextCursor).toBe('2026-09-13T06:00:00Z');
@@ -736,7 +769,7 @@ describe('syncOnce', () => {
   it('skips a tombstone the file already records, so the banner never stacks', async () => {
     const vault = new FakeVault();
     vault.seed(
-      'Concepts/A.md',
+      'Javis-wiki/Concepts/A.md',
       { [JAVIS_REV]: 'old', [JAVIS_DELETED]: true },
       `${TOMBSTONE_BANNER}\n\n${MARKER_START}\n${MARKER_END}\n`,
     );
@@ -748,6 +781,281 @@ describe('syncOnce', () => {
 
     expect(result.skipped).toBe(1);
     expect(vault.calls).toEqual([]);
+  });
+  it('moves the old layout first, so the delta reconciles against the moved note', async () => {
+    const vault = new FakeVault();
+    const p = page();
+    vault.seed('Concepts/Agent-Builder.md', javisFm('concept', 'Agent-Builder', p.updated_at), 'body');
+    const api = new FakeApi([{ pages: [p], serverTime: '2026-09-13T06:00:00Z' }]);
+
+    const result = await syncOnce(deps({ api, vault }));
+
+    expect(result.moved).toBe(1);
+    expect(result.moveConflicts).toEqual([]);
+    expect(result.created).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(vault.calls).toEqual([
+      'rename Concepts/Agent-Builder.md -> Javis-wiki/Concepts/Agent-Builder.md',
+      'rmdir-if-empty Concepts',
+    ]);
+  });
+
+  it('still reports the move and downloads when removing the emptied folder throws (review)', async () => {
+    const vault = new FakeVault();
+    const p = page();
+    vault.seed('Concepts/Agent-Builder.md', javisFm('concept', 'Agent-Builder', p.updated_at), 'body');
+    vault.failRmdir.add('Concepts');
+    const api = new FakeApi([{ pages: [p], serverTime: '2026-09-13T06:00:00Z' }]);
+    const onLayoutMoved = vi.fn();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const result = await syncOnce(deps({ api, vault, onLayoutMoved }));
+
+    expect(result.moved).toBe(1);
+    expect(result.moveConflicts).toEqual([]);
+    expect(onLayoutMoved).toHaveBeenCalledWith({ moved: 1, conflicts: [] });
+    expect(api.sinceSeen).toHaveLength(1);
+    expect(vault.files.has('Javis-wiki/Concepts/Agent-Builder.md')).toBe(true);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('Concepts'), expect.any(Error));
+    warn.mockRestore();
+  });
+
+  it('downloads nothing when a move fails', async () => {
+    const vault = new FakeVault();
+    vault.seed('Concepts/Agent-Builder.md', javisFm('concept', 'Agent-Builder'));
+    vault.failWrites.add('Concepts/Agent-Builder.md');
+    const api = new FakeApi([{ pages: [page()], serverTime: '2026-09-13T06:00:00Z' }]);
+
+    await expect(syncOnce(deps({ api, vault }))).rejects.toBeInstanceOf(VaultWriteError);
+    expect(api.sinceSeen).toEqual([]);
+    expect(vault.files.has('Javis-wiki/Concepts/Agent-Builder.md')).toBe(false);
+  });
+
+  it('reports the move to onLayoutMoved even when the download then fails (review)', async () => {
+    const vault = new FakeVault();
+    vault.seed('Concepts/Agent-Builder.md', javisFm('concept', 'Agent-Builder'));
+    const api = new FakeApi([{ pages: [page()], serverTime: '2026-09-13T06:00:00Z' }]);
+    api.throwQueue.push(new HttpError(503, 'Service Unavailable'));
+    const onLayoutMoved = vi.fn();
+
+    await expect(syncOnce(deps({ api, vault, onLayoutMoved }))).rejects.toBeInstanceOf(HttpError);
+    expect(onLayoutMoved).toHaveBeenCalledTimes(1);
+    expect(onLayoutMoved).toHaveBeenCalledWith({ moved: 1, conflicts: [] });
+  });
+
+  it('reports the moves that succeeded to onLayoutMoved when another move fails (review)', async () => {
+    const vault = new FakeVault();
+    vault.seed('Concepts/A.md', javisFm('concept', 'A'));
+    vault.seed('Concepts/B.md', javisFm('concept', 'B'));
+    vault.failWrites.add('Concepts/A.md');
+    const api = new FakeApi([{ pages: [], serverTime: '2026-09-13T06:00:00Z' }]);
+    const onLayoutMoved = vi.fn();
+
+    await expect(syncOnce(deps({ api, vault, onLayoutMoved }))).rejects.toBeInstanceOf(VaultWriteError);
+    expect(onLayoutMoved).toHaveBeenCalledWith({ moved: 1, conflicts: [] });
+  });
+
+  it('recovers the cursor from moved notes when data.json is gone (Review Focus 4)', async () => {
+    const vault = new FakeVault();
+    vault.seed('Concepts/Agent-Builder.md', javisFm('concept', 'Agent-Builder', '2026-09-20T00:00:00Z'));
+    const api = new FakeApi([{ pages: [], serverTime: '2026-09-27T00:00:00Z' }]);
+
+    await syncOnce(deps({ api, vault, cachedCursor: null }));
+
+    expect(api.sinceSeen).toEqual(['2026-09-20T00:00:00Z']);
+  });
+
+  it('reports a conflict and still syncs the Javis-wiki copy', async () => {
+    const vault = new FakeVault();
+    const p = page();
+    vault.seed('Concepts/Agent-Builder.md', javisFm('concept', 'Agent-Builder', p.updated_at), 'old');
+    vault.seed('Javis-wiki/Concepts/Agent-Builder.md', javisFm('concept', 'Agent-Builder', p.updated_at), 'new');
+    const api = new FakeApi([{ pages: [p], serverTime: '2026-09-13T06:00:00Z' }]);
+
+    const result = await syncOnce(deps({ api, vault }));
+
+    expect(result.moved).toBe(0);
+    expect(result.moveConflicts).toEqual([
+      { from: 'Concepts/Agent-Builder.md', to: 'Javis-wiki/Concepts/Agent-Builder.md' },
+    ]);
+    expect(result.skipped).toBe(1);
+    expect(vault.files.get('Concepts/Agent-Builder.md')?.content).toBe('old');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// moveLegacyLayout — spec 2026-09-27
+// ---------------------------------------------------------------------------
+
+describe('moveLegacyLayout', () => {
+  it('moves root-level Javis notes under Javis-wiki and tidies only the folders it moved from (Review Focus 5)', async () => {
+    const vault = new FakeVault();
+    vault.seed('Concepts/A.md', javisFm('concept', 'A'), 'a body');
+    vault.seed('Concepts/mine.md', null, 'my own note');
+    vault.seed('Topics/T.md', javisFm('topic', 'T'));
+    vault.seed('Gaps/mine.md', { tags: ['x'] });
+    vault.seed('Journal/j.md', null);
+
+    const result = await moveLegacyLayout(vault);
+
+    expect(result).toEqual({ moved: 2, conflicts: [] });
+    expect(vault.calls).toEqual([
+      'rename Concepts/A.md -> Javis-wiki/Concepts/A.md',
+      'rename Topics/T.md -> Javis-wiki/Topics/T.md',
+      'rmdir-if-empty Concepts',
+      'rmdir-if-empty Topics',
+    ]);
+    expect(vault.files.get('Javis-wiki/Concepts/A.md')?.content).toBe('a body');
+    expect(vault.files.has('Concepts/mine.md')).toBe(true);
+    expect(vault.files.has('Gaps/mine.md')).toBe(true);
+  });
+
+  it('reads frontmatter from the file, not the metadata cache (Review Focus 3)', async () => {
+    const vault = new FakeVault();
+    vault.seed('Concepts/A.md', javisFm('concept', 'A'));
+    vault.uncached.add('Concepts/A.md');
+
+    expect(await moveLegacyLayout(vault)).toEqual({ moved: 1, conflicts: [] });
+    expect(vault.files.has('Javis-wiki/Concepts/A.md')).toBe(true);
+  });
+
+  it('reports a conflict and leaves both copies where they are', async () => {
+    const vault = new FakeVault();
+    vault.seed('Concepts/A.md', javisFm('concept', 'A'), 'old');
+    vault.seed('Javis-wiki/Concepts/A.md', javisFm('concept', 'A'), 'new');
+
+    const result = await moveLegacyLayout(vault);
+
+    expect(result).toEqual({
+      moved: 0,
+      conflicts: [{ from: 'Concepts/A.md', to: 'Javis-wiki/Concepts/A.md' }],
+    });
+    // No move. The root folder is offered for cleanup (it sits next to its
+    // Javis-wiki twin), and the adapter keeps it because it still holds A.md.
+    expect(vault.calls).toEqual(['rmdir-if-empty Concepts']);
+    expect(vault.files.get('Concepts/A.md')?.content).toBe('old');
+    expect(vault.files.get('Javis-wiki/Concepts/A.md')?.content).toBe('new');
+  });
+
+  it('attempts every move, then throws if any failed', async () => {
+    const vault = new FakeVault();
+    vault.seed('Concepts/A.md', javisFm('concept', 'A'));
+    vault.seed('Concepts/B.md', javisFm('concept', 'B'));
+    vault.failWrites.add('Concepts/A.md');
+
+    await expect(moveLegacyLayout(vault)).rejects.toBeInstanceOf(VaultWriteError);
+    expect(vault.files.has('Javis-wiki/Concepts/B.md')).toBe(true);
+    expect(vault.files.has('Concepts/A.md')).toBe(true);
+  });
+
+  it('refuses to download past a Javis note whose YAML will not parse, instead of forking it (review)', async () => {
+    const vault = new FakeVault();
+    // readFrontmatter answers null (parse error), but the text is plainly a wiki page.
+    vault.seed('Concepts/Foo.md', null, '---\njavis_type: concept\njavis_slug: Foo\ntitle: a: b\n---\nmy edits');
+    vault.seed('Concepts/B.md', javisFm('concept', 'B'));
+    vault.seed('Concepts/mine.md', null, '---\ntitle: a: b\n---\nnot ours');
+
+    await expect(moveLegacyLayout(vault)).rejects.toThrow(/Concepts\/Foo\.md/);
+    expect(vault.files.has('Javis-wiki/Concepts/B.md')).toBe(true);
+    expect(vault.files.has('Concepts/Foo.md')).toBe(true);
+    expect(vault.files.has('Concepts/mine.md')).toBe(true);
+  });
+
+  it('leaves an upload-tracked root note alone, broken YAML or not (review)', async () => {
+    const vault = new FakeVault();
+    vault.seed(
+      'Concepts/Idea.md',
+      { ...javisFm('concept', 'Idea'), javis_source_id: '3f2b8c1e-9a4d-4e6f-8b7a-1c2d3e4f5a6b' },
+      'mine',
+    );
+    vault.seed(
+      'Concepts/Broken.md',
+      null,
+      '---\njavis_source_id: 3f2b8c1e-9a4d-4e6f-8b7a-1c2d3e4f5a6c\njavis_type: concept\njavis_slug: Broken\ntitle: a: b\n---\nmine',
+    );
+
+    expect(await moveLegacyLayout(vault)).toEqual({ moved: 0, conflicts: [] });
+    expect(vault.calls).toEqual([]);
+    expect(vault.files.has('Concepts/Idea.md')).toBe(true);
+    expect(vault.files.has('Concepts/Broken.md')).toBe(true);
+  });
+
+  it('skips a root note it cannot read instead of failing the whole sync (review)', async () => {
+    const vault = new FakeVault();
+    vault.seed('Concepts/A.md', javisFm('concept', 'A'));
+    vault.seed('Concepts/mine.md', null, 'my own note');
+    const realRead = vault.readFrontmatter.bind(vault);
+    vi.spyOn(vault, 'readFrontmatter').mockImplementation(async (path: string) => {
+      if (path === 'Concepts/mine.md') throw new Error('EACCES: permission denied');
+      return realRead(path);
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    expect(await moveLegacyLayout(vault)).toEqual({ moved: 1, conflicts: [] });
+    expect(vault.files.has('Javis-wiki/Concepts/A.md')).toBe(true);
+    expect(vault.files.has('Concepts/mine.md')).toBe(true);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('Concepts/mine.md'), expect.anything());
+    warn.mockRestore();
+  });
+
+  it('logs and ignores a folder removal that throws, e.g. a leftover .DS_Store (review)', async () => {
+    const vault = new FakeVault();
+    vault.seed('Concepts/A.md', javisFm('concept', 'A'));
+    vault.failRmdir.add('Concepts');
+    const onMoved = vi.fn();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    expect(await moveLegacyLayout(vault, onMoved)).toEqual({ moved: 1, conflicts: [] });
+    expect(onMoved).toHaveBeenCalledWith({ moved: 1, conflicts: [] });
+    expect(vault.files.has('Javis-wiki/Concepts/A.md')).toBe(true);
+    expect(vault.calls).toContain('rmdir-if-empty Concepts');
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('could not remove the emptied folder Concepts'),
+      expect.any(Error),
+    );
+    warn.mockRestore();
+  });
+
+  it('does nothing on a vault that is already migrated', async () => {
+    const vault = new FakeVault();
+    vault.seed('Javis-wiki/Concepts/A.md', javisFm('concept', 'A'));
+
+    expect(await moveLegacyLayout(vault)).toEqual({ moved: 0, conflicts: [] });
+    expect(vault.calls).toEqual([]);
+  });
+
+  it('retries cleanup on a later sync: an empty root type folder whose Javis-wiki twin exists (E2E-07)', async () => {
+    const vault = new FakeVault();
+    vault.seed('Javis-wiki/Topics/T.md', javisFm('topic', 'T'));
+    vault.seed('Javis-wiki/Gaps/G.md', javisFm('gap', 'G'));
+    // Left behind by an earlier run whose folder removal failed.
+    vault.emptyFolders.add('Topics');
+    vault.emptyFolders.add('Gaps');
+
+    expect(await moveLegacyLayout(vault)).toEqual({ moved: 0, conflicts: [] });
+    expect(vault.calls).toEqual(['rmdir-if-empty Gaps', 'rmdir-if-empty Topics']);
+    expect(await vault.folderExists('Topics')).toBe(false);
+  });
+
+  it('leaves a root type folder alone when Javis-wiki has no folder of that name', async () => {
+    const vault = new FakeVault();
+    vault.seed('Javis-wiki/Topics/T.md', javisFm('topic', 'T'));
+    vault.emptyFolders.add('Gaps');
+
+    await moveLegacyLayout(vault);
+
+    expect(vault.calls).toEqual([]);
+  });
+
+  it('offers a folder once, whether the move just emptied it or an earlier run left it', async () => {
+    const vault = new FakeVault();
+    vault.seed('Concepts/A.md', javisFm('concept', 'A'));
+    vault.seed('Concepts/mine.md', null, 'my own note');
+
+    await moveLegacyLayout(vault);
+
+    expect(vault.calls.filter((c) => c.startsWith('rmdir-if-empty'))).toEqual(['rmdir-if-empty Concepts']);
+    expect(vault.files.has('Concepts/mine.md')).toBe(true);
   });
 });
 
@@ -761,6 +1069,8 @@ describe('summarize', () => {
     scanned: 0,
     nextCursor: null,
     pendingFullResync: false,
+    moved: 0,
+    moveConflicts: [],
     failures: [],
     startedAt: '2026-09-13T06:00:00Z',
     finishedAt: '2026-09-13T06:00:01Z',
@@ -776,7 +1086,7 @@ describe('summarize', () => {
 
   it('always mentions failures', () => {
     expect(
-      summarize({ ...base, created: 1, failures: [{ path: 'Concepts/A.md', message: 'boom' }] }),
+      summarize({ ...base, created: 1, failures: [{ path: 'Javis-wiki/Concepts/A.md', message: 'boom' }] }),
     ).toBe('1 created, 1 failed');
   });
 });

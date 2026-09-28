@@ -54,7 +54,7 @@ import {
   splitMissing,
 } from './shell/settings-load';
 import { JavisSourcesApiClient } from './shell/sources-api';
-import { summarize, syncOnce } from './shell/sync';
+import { summarize, syncOnce, type LayoutMoveResult } from './shell/sync';
 import {
   EDIT_DEBOUNCE_MS,
   SelfWriteTracker,
@@ -354,6 +354,9 @@ export default class JavisWikiSyncPlugin extends Plugin {
       trigger,
       signal,
       onProgress: (done) => this.#setStatus(`Javis: syncing… ${done}`),
+      // Before the download, so a run that then fails still says where the
+      // notes went: the next run finds nothing left to move.
+      onLayoutMoved: (layout) => this.#reportLayoutMove(layout, trigger),
     });
 
     // `nextCursor` is null when the run wrote nothing it was handed, or
@@ -383,6 +386,31 @@ export default class JavisWikiSyncPlugin extends Plugin {
       new Notice(`Javis could not write some notes:\n${listed}`, 12_000);
     }
     return result;
+  }
+
+  /**
+   * The layout-move notices (spec 2026-09-27), from `syncOnce`'s
+   * `onLayoutMoved` — called before the download, so a run that fails after
+   * moving notes still reports them.
+   */
+  #reportLayoutMove(layout: LayoutMoveResult, trigger: SyncTrigger): void {
+    // Spec 2026-09-27. The move happens once per vault, so its notice is shown
+    // whatever started the run; a conflict persists until the user resolves
+    // it, so its notice waits for a run the user started.
+    if (layout.moved > 0) {
+      new Notice(`Javis: moved ${layout.moved} ${layout.moved === 1 ? 'note' : 'notes'} into Javis-wiki/.`);
+    }
+    if (layout.conflicts.length > 0) {
+      console.warn('Javis: not moved into Javis-wiki/ because the destination exists:', layout.conflicts);
+      if (INTERACTIVE.has(trigger)) {
+        const n = layout.conflicts.length;
+        new Notice(
+          `Javis: ${n} ${n === 1 ? 'note' : 'notes'} in the vault root ${n === 1 ? 'was' : 'were'} not moved ` +
+            'because Javis-wiki already has a note with the same name. The developer console lists them.',
+          12_000,
+        );
+      }
+    }
   }
 
   /**

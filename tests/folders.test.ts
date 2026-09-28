@@ -5,7 +5,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { isUnderFolder, normalizeFolder, validateFolders } from '../src/core/folders';
-import { TYPE_TO_PLURAL } from '../src/core/slug';
+import { TYPE_TO_PLURAL, WIKI_ROOT } from '../src/core/slug';
 
 describe('normalizeFolder', () => {
   it('trims, strips slashes, and collapses doubled slashes', () => {
@@ -36,21 +36,30 @@ describe('validateFolders', () => {
     expect(custom.errors[0]!.reason).toMatch(/settings/i);
   });
 
-  it('rejects each of the nine wiki folders and anything inside one', () => {
-    for (const folder of Object.values(TYPE_TO_PLURAL)) {
+  it('rejects Javis-wiki and anything inside it', () => {
+    for (const folder of [WIKI_ROOT, `${WIKI_ROOT}/Topics`, `${WIKI_ROOT}/Concepts/Sub`]) {
       const result = ok([folder]);
       expect(result.ok).toEqual([]);
-      expect(result.errors[0]!.reason).toMatch(/wiki/i);
+      expect(result.errors[0]!.reason).toBe('Javis-wiki is the folder Javis writes; it cannot be uploaded back.');
     }
-    expect(ok(['Concepts/Sub']).errors).toHaveLength(1);
   });
 
-  it('rejects a wiki folder in any case: on APFS and NTFS "sources" IS "Sources" (review)', () => {
-    for (const folder of ['sources', 'CONCEPTS', 'sOuRcEs/sub']) {
-      expect(ok([folder]).errors[0]!.reason).toMatch(/wiki/i);
+  it('rejects Javis-wiki in any case: on APFS and NTFS "javis-wiki" IS "Javis-wiki" (review)', () => {
+    for (const folder of ['javis-wiki', 'JAVIS-WIKI/sources']) {
+      expect(ok([folder]).errors[0]!.reason).toMatch(/Javis-wiki/);
     }
     expect(ok(['.OBSIDIAN']).errors).toHaveLength(1);
     expect(validateFolders(['Config/x'], 'config').errors).toHaveLength(1);
+  });
+
+  it('allows root folders named like the page types, now that the wiki lives in Javis-wiki', () => {
+    for (const folder of Object.values(TYPE_TO_PLURAL)) {
+      expect(ok([folder])).toEqual({ ok: [folder], errors: [] });
+    }
+  });
+
+  it('treats a name prefix of Javis-wiki as a different folder', () => {
+    expect(ok(['Javis-wiki-notes'])).toEqual({ ok: ['Javis-wiki-notes'], errors: [] });
   });
 
   it('treats folders differing only in case as the same folder', () => {
@@ -81,7 +90,7 @@ describe('validateFolders', () => {
   });
 
   it('returns user-facing sentences', () => {
-    for (const e of ok(['', 'Concepts', 'A', 'A/B']).errors) {
+    for (const e of ok(['', 'Javis-wiki', 'A', 'A/B']).errors) {
       expect(e.reason).toMatch(/^[A-Z].*\.$/);
     }
   });

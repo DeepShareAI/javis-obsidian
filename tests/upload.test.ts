@@ -827,9 +827,9 @@ describe('uploadOnce: nothing to do without a valid selection', () => {
 
   it('invalid folders -> no API call, reported', async () => {
     const { api, deps } = setup({ 'Journal/a.md': 'x' });
-    const result = await uploadOnce(deps({ folders: ['Journal', 'Concepts'] }));
+    const result = await uploadOnce(deps({ folders: ['Journal', 'Javis-wiki/Concepts'] }));
     expect(api.calls).toEqual([]);
-    expect(result.invalidFolders).toMatchObject([{ folder: 'Concepts' }]);
+    expect(result.invalidFolders).toMatchObject([{ folder: 'Javis-wiki/Concepts' }]);
   });
 
   it('a GET failure means no PUT and no DELETE', async () => {

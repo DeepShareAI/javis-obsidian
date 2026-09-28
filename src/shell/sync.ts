@@ -26,14 +26,18 @@
  *    holding it back is not enough, so the run also raises
  *    `SyncResult.pendingFullResync`. Every write in §F.2 is idempotent, which
  *    is what makes re-delivery free.
- * 3. **Never unlink.** There is no call to any delete primitive in this file,
- *    and `VaultAdapter` (contracts.ts) exposes none to call.
+ * 3. **Never unlink a note.** The only removal `VaultAdapter` (contracts.ts)
+ *    exposes is `removeFolderIfEmpty`, used after the 0.2.x layout move to drop
+ *    an emptied root wiki folder; it refuses any folder with children, so no
+ *    file is ever deleted or trashed.
  */
 
 import { replaceMarkerBlock } from '../core/markers';
+import { isWikiPageText, readSourceId } from '../core/note-text';
+import { legacyDestination, planLayoutMove, type LayoutCandidate, type LayoutMove } from '../core/layout-move';
 import { reconcile } from '../core/reconcile';
 import { applyTombstone, tombstoneFrontmatter } from '../core/render';
-import { pathForPage } from '../core/slug';
+import { TYPE_TO_PLURAL, WIKI_ROOT, pathForPage } from '../core/slug';
 import type {
   ExportBatch,
   ServerPage,
@@ -42,8 +46,8 @@ import type {
   SyncResult,
   VaultAdapter,
 } from './contracts';
-import { HttpError, SyncCancelledError, isJavisError } from './errors';
-import { maxRevision } from './vault';
+import { HttpError, SyncCancelledError, VaultWriteError, isJavisError } from './errors';
+import { maxRevision, parentFolder } from './vault';
 
 /**
  * The §F.1 cursor.
@@ -197,6 +201,120 @@ function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted) throw new SyncCancelledError('Sync was cancelled.');
 }
 
+/** What the layout move did, for the notices in src/main.ts. */
+export interface LayoutMoveResult {
+  moved: number;
+  conflicts: readonly LayoutMove[];
+}
+
+/**
+ * Move whatever the 0.2.x root layout left behind into `Javis-wiki/`
+ * (spec 2026-09-27). Runs at the start of every sync and is a folder listing
+ * once nothing is left to move.
+ *
+ * Frontmatter comes from `readFrontmatter` (the file), not from
+ * `listMarkdownFiles` (the metadata cache): on the vault-open sync the cache
+ * may not have indexed a note yet, and a Javis note missed here would be
+ * re-created at its new path by the download, leaving a permanent conflict.
+ *
+ * A root note whose frontmatter will not parse (`readFrontmatter` is null) but
+ * whose text still has a top-level `javis_slug:`/`javis_type:` line is a Javis
+ * note the user broke by hand. It cannot be planned, and skipping it would let
+ * the download fork it into a second copy, so it counts as a failed move.
+ * Unless it also has a `javis_source_id:` line: that is an upload-tracked user
+ * note, which is never moved (see src/core/layout-move.ts), so it is skipped.
+ *
+ * Every move is attempted. If any failed, this throws AFTER the rest, so the
+ * caller downloads nothing this run: a download would `create` the unmoved
+ * page at its new path. The next sync retries the move.
+ *
+ * A root note that cannot be read at all (no permission, a cloud placeholder
+ * that will not download) is logged and skipped: most notes in these folders
+ * are the user's own, and one unreadable file must not stop every sync.
+ *
+ * A root type folder is offered to `removeFolderIfEmpty` when this run moved a
+ * note out of it, or when it exists next to its `Javis-wiki/` twin — so a
+ * removal that failed is retried on every sync. The adapter removes it only
+ * when it is empty on disk; a failure there is logged and ignored.
+ *
+ * `onMoved` receives the result before this returns or throws, so the moves
+ * that succeeded are still reported when another one failed.
+ */
+export async function moveLegacyLayout(
+  vault: VaultAdapter,
+  onMoved?: (result: LayoutMoveResult) => void,
+): Promise<LayoutMoveResult> {
+  const listed = await vault.listMarkdownFiles();
+  const candidates: LayoutCandidate[] = [];
+  const failures: { path: string; message: string }[] = [];
+  for (const note of listed) {
+    if (legacyDestination(note.path) === null) continue;
+    let frontmatter: LayoutCandidate['frontmatter'];
+    let brokenWikiPage: boolean;
+    try {
+      frontmatter = await vault.readFrontmatter(note.path);
+      if (frontmatter === null) {
+        const text = (await vault.read(note.path)) ?? '';
+        // A `javis_source_id` line marks an upload-tracked user note, which never moves.
+        brokenWikiPage = isWikiPageText(text) && readSourceId(text) === null;
+      } else {
+        brokenWikiPage = false;
+      }
+    } catch (error) {
+      // Most notes here are the user's own; one unreadable file must not stop every sync.
+      console.warn(`Javis: could not read ${note.path} to check whether it is a Javis note; skipped`, error);
+      continue;
+    }
+    if (brokenWikiPage) {
+      failures.push({ path: note.path, message: 'its properties (YAML) do not parse; fix them so it can move' });
+      continue;
+    }
+    candidates.push({ path: note.path, frontmatter });
+  }
+  const plan = planLayoutMove(candidates, new Set(listed.map((note) => note.path)));
+
+  let moved = 0;
+  const emptied = new Set<string>();
+  for (const move of plan.moves) {
+    try {
+      await vault.rename(move.from, move.to);
+      moved += 1;
+      emptied.add(parentFolder(move.from)!);
+    } catch (error) {
+      failures.push({ path: move.from, message: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  // Also every root type folder an earlier run left behind (E2E-07: a removal
+  // that failed is retried on every sync, not only in the run that emptied it).
+  // Only when `Javis-wiki/` has the same folder, i.e. the move happened; the
+  // adapter still removes nothing that holds a file.
+  const cleanup = new Set(emptied);
+  for (const plural of [...new Set(Object.values(TYPE_TO_PLURAL))].sort()) {
+    if (cleanup.has(plural)) continue;
+    if ((await vault.folderExists(plural)) && (await vault.folderExists(`${WIKI_ROOT}/${plural}`))) cleanup.add(plural);
+  }
+  for (const folder of cleanup) {
+    try {
+      await vault.removeFolderIfEmpty(folder);
+    } catch (error) {
+      console.warn(`Javis: could not remove the emptied folder ${folder}`, error);
+    }
+  }
+
+  const result: LayoutMoveResult = { moved, conflicts: plan.conflicts };
+  onMoved?.(result);
+
+  if (failures.length > 0) {
+    const first = failures[0]!;
+    throw new VaultWriteError(
+      first.path,
+      `Could not move ${failures.length} ${failures.length === 1 ? 'note' : 'notes'} into Javis-wiki/ ` +
+        `(${first.path}: ${first.message}). Nothing was downloaded; the next sync retries.`,
+    );
+  }
+  return result;
+}
+
 /**
  * Run the §F.2 loop once.
  *
@@ -285,6 +403,11 @@ export async function syncOnce(deps: SyncDeps): Promise<SyncResult> {
   };
 
   throwIfAborted(signal);
+  // Before the cursor: the rescan and every `decideAction` must see the notes
+  // where `pathForPage` now puts them (spec 2026-09-27). `onLayoutMoved` hears
+  // about the move here, before the download or a cancel can throw it away.
+  const layout = await moveLegacyLayout(vault, deps.onLayoutMoved);
+  throwIfAborted(signal);
   const since = await resolveCursor(vault, deps.cachedCursor, deps.pendingFullResync);
 
   let serverTime: string;
@@ -321,6 +444,8 @@ export async function syncOnce(deps: SyncDeps): Promise<SyncResult> {
     // wrote everything it was handed. This is the flag that makes it true of
     // the rest.
     pendingFullResync: state.failures.length > 0 && !cursorFromCache,
+    moved: layout.moved,
+    moveConflicts: layout.conflicts,
     failures: state.failures,
     startedAt,
     finishedAt: new Date().toISOString(),

@@ -14,12 +14,14 @@
  *
  * Three structural decisions in this file, each load-bearing:
  *
- * 1. **There is no `delete`, no `trash`, and no way to reach one.** §F.2: "The
- *    plugin never calls `vault.delete` or `vault.trash`." The `App` handle is a
- *    true ECMAScript private field (`#app`), not a TypeScript `private` — so
- *    the prohibition survives a cast to `any`, which a compile-time-only
- *    modifier would not. A caller holding this adapter has no route to the
- *    vault's destructive API at all.
+ * 1. **No file is ever deleted or trashed.** §F.2: "The plugin never calls
+ *    `vault.delete` or `vault.trash`" — with one sanctioned exception (spec
+ *    2026-09-27): `removeFolderIfEmpty` deletes an emptied 0.2.x wiki FOLDER,
+ *    and only after checking it has no children, so it can never take a note
+ *    with it. The `App` handle is a true ECMAScript private field (`#app`), not
+ *    a TypeScript `private` — so a caller holding this adapter can reach the
+ *    vault's destructive API only through that one guarded method, even after
+ *    a cast to `any`, which a compile-time-only modifier would not ensure.
  *
  * 2. **The `obsidian` module is never imported at the top level.** Types come
  *    in through `import type`, which TypeScript erases; the single runtime
@@ -42,7 +44,7 @@
 import type { App, SecretStorage, TFile } from 'obsidian';
 
 import { JAVIS_REV } from '../core/types';
-import { TYPE_TO_PLURAL } from '../core/slug';
+import { TYPE_TO_PLURAL, WIKI_ROOT } from '../core/slug';
 import { isUnderFolder } from '../core/folders';
 import { isUuid, SOURCE_ID_KEY } from '../core/note-text';
 import type { Frontmatter, SecretStore, UploadVault, VaultAdapter, VaultNote } from './contracts';
@@ -90,7 +92,7 @@ function defaultParseYaml(yaml: string): unknown {
 // ---------------------------------------------------------------------------
 
 /**
- * The nine §E folders, at the vault root, in a stable order.
+ * The nine §E folders, under `WIKI_ROOT`, in a stable order.
  *
  * Derived from `TYPE_TO_PLURAL` rather than written out again: the map is
  * already the single source of truth for the folder half of
@@ -102,7 +104,7 @@ function defaultParseYaml(yaml: string): unknown {
  * `createFolder` would throw.
  */
 export const MANAGED_FOLDERS: readonly string[] = Object.freeze(
-  [...new Set(Object.values(TYPE_TO_PLURAL))].sort(),
+  [...new Set(Object.values(TYPE_TO_PLURAL))].sort().map((plural) => `${WIKI_ROOT}/${plural}`),
 );
 
 /**
@@ -120,11 +122,9 @@ export function parentFolder(path: string): string | null {
 /**
  * Every folder that must exist before `path` can be created, outermost first.
  *
- * `'Concepts/Agent-Builder.md'` yields `['Concepts']`. Deeper paths yield the
- * whole chain, which today's `pathForPage` never produces — the tree is exactly
- * one level deep by §E — but `Vault.createFolder` does not create intermediate
- * folders, so handling the general case costs three lines and removes a
- * failure mode from any future caller that nests.
+ * `'Javis-wiki/Concepts/Agent-Builder.md'` yields
+ * `['Javis-wiki', 'Javis-wiki/Concepts']`, outermost first, because
+ * `Vault.createFolder` does not create intermediate folders.
  *
  * Empty segments (a doubled slash, a leading slash) are dropped rather than
  * turned into a folder named `''`.
@@ -140,6 +140,46 @@ export function folderAncestors(path: string): string[] {
     out.push(prefix);
   }
   return out;
+}
+
+/**
+ * `path` with each folder segment spelled as the vault already spells it.
+ *
+ * Review: Obsidian's `getFolderByPath` / `getFileByPath` are exact, case-
+ * sensitive lookups, but APFS and NTFS are not. A vault holding `javis-wiki`
+ * (made by hand, or a case-only rename of `Javis-wiki` in the file explorer)
+ * made `createFolder('Javis-wiki')` throw "Folder already exists." while the
+ * exact lookup still found nothing, so every move and every create failed on
+ * every sync. Resolving to the existing spelling writes into that folder
+ * instead.
+ *
+ * `childFolders(parent)` lists the folder names directly inside the real
+ * folder `parent` (`''` is the vault root). The exact spelling wins when it
+ * exists, so a case-sensitive volume holding both keeps the canonical one.
+ * Once a segment has no match, it and everything below it are new folders and
+ * are kept as given. The file name is never touched.
+ */
+export function resolveFolderCase(
+  path: string,
+  childFolders: (parent: string) => readonly string[],
+): string {
+  const folder = parentFolder(path);
+  if (folder === null) return path;
+  const segments = folder.split('/').filter((segment) => segment !== '');
+  let real = '';
+  let i = 0;
+  for (; i < segments.length; i += 1) {
+    const segment = segments[i]!;
+    const names = childFolders(real);
+    const match = names.includes(segment)
+      ? segment
+      : names.find((name) => name.toLowerCase() === segment.toLowerCase());
+    if (match === undefined) break;
+    real = real === '' ? match : `${real}/${match}`;
+  }
+  const rest = segments.slice(i);
+  const resolved = [real, ...rest].filter((part) => part !== '').join('/');
+  return `${resolved}/${path.slice(path.lastIndexOf('/') + 1)}`;
 }
 
 /**
@@ -381,7 +421,8 @@ export class ObsidianVaultAdapter implements VaultAdapter, UploadVault {
    * the parent is missing — and a fresh vault has none of the nine §E folders,
    * so without this every single create on a first sync would fail.
    */
-  async create(path: string, content: string): Promise<void> {
+  async create(requested: string, content: string): Promise<void> {
+    const path = this.#resolve(requested);
     await this.#ensureFolders(path);
     try {
       await this.#app.vault.create(path, content);
@@ -478,6 +519,55 @@ export class ObsidianVaultAdapter implements VaultAdapter, UploadVault {
     });
   }
 
+  /**
+   * Move a note, creating the destination folders first.
+   *
+   * `vault.rename`, not `fileManager.renameFile` (review): the file manager
+   * runs Obsidian's link update, and with "Automatically update internal
+   * links" off (the default) that update opens a blocking "Update links?"
+   * modal for every moved page with incoming links, and does not resolve until
+   * the user answers it. `vault.rename` never touches links; `[[Concepts/Foo]]`
+   * still resolves to `Javis-wiki/Concepts/Foo.md` by suffix (spec D4).
+   */
+  async rename(from: string, requestedTo: string): Promise<void> {
+    const file = this.#require(from);
+    const to = this.#resolve(requestedTo);
+    if (this.#app.vault.getAbstractFileByPath(to) !== null) {
+      throw new VaultWriteError(from, `Could not move ${from}: ${to} already exists`);
+    }
+    await this.#ensureFolders(to);
+    try {
+      await this.#app.vault.rename(file, to);
+    } catch (err) {
+      throw new VaultWriteError(from, `Could not move ${from} to ${to}: ${describeError(err)}`, {
+        cause: err,
+      });
+    }
+  }
+
+  /**
+   * Remove an emptied 0.2.x root wiki folder, and only an empty one.
+   *
+   * Neither `vault.delete(folder)` nor `adapter.rmdir(path, false)` can do this
+   * on Obsidian 1.13: both go through Node's `rm` without `recursive` and throw
+   * "rm returned EISDIR" even for a folder that is empty on disk (E2E run of
+   * 2026-09-27; tests/vault-adapter-folders.test.ts). `rmdir(path, true)` works,
+   * so emptiness is established first from `adapter.list`, which — unlike the
+   * folder's `children` — also reports hidden files such as `.DS_Store`. A
+   * folder holding anything at all is left alone.
+   */
+  async removeFolderIfEmpty(path: string): Promise<void> {
+    const folder = this.#app.vault.getFolderByPath(path);
+    if (folder === null) return;
+    const listed = await this.#app.vault.adapter.list(folder.path);
+    if (listed.files.length > 0 || listed.folders.length > 0) return;
+    await this.#app.vault.adapter.rmdir(folder.path, true);
+  }
+
+  async folderExists(path: string): Promise<boolean> {
+    return this.#app.vault.getFolderByPath(this.#resolve(path)) !== null;
+  }
+
   // -- the upload half (spec 2026-09-24 §F.2) ------------------------------
   //
   // Still no delete and no trash. The upload never removes a vault file: a
@@ -527,7 +617,19 @@ export class ObsidianVaultAdapter implements VaultAdapter, UploadVault {
   // -- internals ------------------------------------------------------------
 
   #find(path: string): TFile | null {
-    return this.#app.vault.getFileByPath(path);
+    return this.#app.vault.getFileByPath(this.#resolve(path));
+  }
+
+  /** `resolveFolderCase` over the live folder tree. */
+  #resolve(path: string): string {
+    const vault = this.#app.vault;
+    return resolveFolderCase(path, (parent) => {
+      const folder = parent === '' ? vault.getRoot() : vault.getFolderByPath(parent);
+      if (folder === null) return [];
+      // A TFolder has `children`; a TFile does not. No `instanceof`: `obsidian`
+      // is not loadable at import time (decision 2 in the module comment).
+      return folder.children.filter((child) => 'children' in child).map((child) => child.name);
+    });
   }
 
   #require(path: string): TFile {

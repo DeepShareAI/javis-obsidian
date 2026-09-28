@@ -24,6 +24,7 @@
 import type { ExportResponse, Frontmatter, ServerPage } from '../core/types';
 import type { SyncAction } from '../core/reconcile';
 import type { FolderError } from '../core/folders';
+import type { LayoutMove } from '../core/layout-move';
 import type {
   HeldAction,
   ServerSource,
@@ -419,6 +420,28 @@ export interface VaultAdapter {
    * pages the loop then skips as `unchanged`.
    */
   listMarkdownFiles(): Promise<readonly VaultNote[]>;
+
+  /**
+   * Move a note (spec 2026-09-27, the 0.2.x → 0.3.0 layout move).
+   *
+   * MUST create `to`'s parent folders first, and MUST use `Vault.rename`, not
+   * `FileManager.renameFile`: the latter runs Obsidian's link update, which
+   * with the default link setting opens a blocking prompt per moved page.
+   * Links keep resolving by suffix (spec D4). Rejects with
+   * `VaultWriteError` when `from` is missing, when anything already exists at
+   * `to` (a move never overwrites), or when the rename fails.
+   */
+  rename(from: string, to: string): Promise<void>;
+
+  /**
+   * Delete the folder at `path` only when the DISK lists nothing inside it,
+   * hidden files included; a no-op when it is absent or not empty. The only
+   * removal this contract allows, and it can never take a note with it.
+   */
+  removeFolderIfEmpty(path: string): Promise<void>;
+
+  /** Whether a folder exists at `path` (the `Javis-wiki` segment matched in any case). */
+  folderExists(path: string): Promise<boolean>;
 }
 
 // ---------------------------------------------------------------------------
@@ -464,6 +487,10 @@ export interface SyncResult {
    * Always written, never OR-ed: a clean run clears the flag.
    */
   pendingFullResync: boolean;
+  /** Notes moved from the 0.2.x root layout into `Javis-wiki/` this run (spec 2026-09-27). */
+  moved: number;
+  /** Root-level Javis notes left in place because their `Javis-wiki/` path was taken. */
+  moveConflicts: readonly LayoutMove[];
   startedAt: string;
   finishedAt: string;
 }
@@ -494,6 +521,14 @@ export interface SyncDeps {
   signal?: AbortSignal;
   /** Called after each batch, for the status bar. */
   onProgress?: (done: number, action: SyncAction['kind']) => void;
+  /**
+   * Called once the layout move (spec 2026-09-27) has run, before anything
+   * else can fail: the download, a cancel, or another move in the same run.
+   * `moved` counts the renames that succeeded even when the run then throws,
+   * so the caller can tell the user where their notes went. A later run finds
+   * nothing left to move, so a count dropped here is dropped for good.
+   */
+  onLayoutMoved?: (result: { moved: number; conflicts: readonly LayoutMove[] }) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -502,8 +537,9 @@ export interface SyncDeps {
 
 /**
  * The vault, as the upload half needs it. A separate, narrower seam than
- * `VaultAdapter`, and — like it — with no delete and no trash: §F.2 "the
- * plugin never calls `vault.delete` or `vault.trash`" holds for uploads too.
+ * `VaultAdapter`, and with no removal of any kind (not even `VaultAdapter`'s
+ * empty-folder `removeFolderIfEmpty`): the upload never deletes or trashes a
+ * vault file.
  */
 export interface UploadVault {
   /**

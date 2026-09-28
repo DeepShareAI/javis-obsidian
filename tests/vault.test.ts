@@ -25,20 +25,21 @@ import {
   maxRevision,
   parentFolder,
   parseFrontmatterBlock,
+  resolveFolderCase,
 } from '../src/shell/vault';
 
 describe('MANAGED_FOLDERS', () => {
-  it('is the nine §E folders', () => {
+  it('is the nine §E folders, under Javis-wiki', () => {
     expect(MANAGED_FOLDERS).toEqual([
-      'Comparisons',
-      'Concepts',
-      'Decisions',
-      'Entities',
-      'Gaps',
-      'Questions',
-      'Sources',
-      'Syntheses',
-      'Topics',
+      'Javis-wiki/Comparisons',
+      'Javis-wiki/Concepts',
+      'Javis-wiki/Decisions',
+      'Javis-wiki/Entities',
+      'Javis-wiki/Gaps',
+      'Javis-wiki/Questions',
+      'Javis-wiki/Sources',
+      'Javis-wiki/Syntheses',
+      'Javis-wiki/Topics',
     ]);
   });
 
@@ -92,6 +93,34 @@ describe('folderAncestors', () => {
 
   it('drops empty segments rather than inventing a folder named ""', () => {
     expect(folderAncestors('A//B/note.md')).toEqual(['A', 'A/B']);
+  });
+});
+
+describe('resolveFolderCase (review: a differently-cased Javis-wiki folder)', () => {
+  // A tiny folder tree: parent real path ('' = vault root) -> child folder names.
+  const tree = (folders: Record<string, string[]>) => (parent: string) => folders[parent] ?? [];
+
+  it('uses an existing folder whose name differs only in case', () => {
+    // On APFS/NTFS `createFolder('Javis-wiki')` throws "Folder already exists."
+    // when `javis-wiki` is there, and the exact-case lookup never finds it.
+    const children = tree({ '': ['javis-wiki'], 'javis-wiki': ['concepts'] });
+    expect(resolveFolderCase('Javis-wiki/Concepts/Foo.md', children)).toBe('javis-wiki/concepts/Foo.md');
+  });
+
+  it('keeps the rest of the path as given once a folder does not exist yet', () => {
+    const children = tree({ '': ['javis-wiki'] });
+    expect(resolveFolderCase('Javis-wiki/Concepts/Foo.md', children)).toBe('javis-wiki/Concepts/Foo.md');
+  });
+
+  it('prefers the exact spelling when both exist (a case-sensitive volume)', () => {
+    const children = tree({ '': ['javis-wiki', 'Javis-wiki'], 'Javis-wiki': ['Concepts'] });
+    expect(resolveFolderCase('Javis-wiki/Concepts/Foo.md', children)).toBe('Javis-wiki/Concepts/Foo.md');
+  });
+
+  it('leaves the file name and root-level paths alone', () => {
+    const children = tree({ '': ['foo.md'] });
+    expect(resolveFolderCase('Foo.md', children)).toBe('Foo.md');
+    expect(resolveFolderCase('Javis-wiki/Concepts/Foo.md', tree({}))).toBe('Javis-wiki/Concepts/Foo.md');
   });
 });
 
@@ -284,7 +313,7 @@ describe('maxRevision', () => {
 // ---------------------------------------------------------------------------
 
 import { readFileSync, readdirSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 
 import { cachedSourceIdHint, notesUnder } from '../src/shell/vault';
 
@@ -350,15 +379,63 @@ describe('the plugin never deletes or trashes a vault file (§F.2)', () => {
     }
   });
 
+  // The one sanctioned removal (spec 2026-09-27): `removeFolderIfEmpty` deletes
+  // a FOLDER, and only after checking it has no children. It can never take a
+  // note with it. Exempted by exact file and line text, so any other removal —
+  // including a second `vault.delete` in the same file — still fails.
+  const SANCTIONED = new Set([`${join('src', 'shell', 'vault.ts')}: await this.#app.vault.adapter.rmdir(folder.path, true);`]);
+
   it('no source file calls a vault, adapter or fileManager removal API', () => {
     // Code lines only: the prohibition is quoted in several doc comments.
-    const offenders = sources(join(__dirname, '..', 'src')).flatMap((file) =>
+    const root = join(__dirname, '..');
+    const offenders = sources(join(root, 'src')).flatMap((file) =>
       readFileSync(file, 'utf8')
         .split('\n')
         .filter((line) => !/^\s*(\*|\/\/|\/\*)/.test(line))
         .filter((line) => REMOVAL.test(line))
-        .map((line) => `${file}: ${line.trim()}`),
+        .map((line) => `${relative(root, file)}: ${line.trim()}`),
     );
-    expect(offenders).toEqual([]);
+    expect(offenders.filter((o) => !SANCTIONED.has(o))).toEqual([]);
+    // The exemption is used exactly once; a copy of the line elsewhere in the file would show twice.
+    expect(offenders.filter((o) => SANCTIONED.has(o))).toHaveLength(1);
+  });
+
+  // Review: with the sanctioned removal above in the code, no prose may still
+  // promise there is no `vault.delete` call or no delete primitive at all.
+  it('no README or header comment claims the plugin has no delete call', () => {
+    const root = join(__dirname, '..');
+    const stale = [
+      /no call to\s*(>\s*)?`vault\.delete`/,
+      /no `delete`, no `trash`, and no way to reach one/,
+      /exposes none to call/,
+      /no route to the\s*(\*\s*)?vault's destructive API/,
+      /with no delete and no trash/,
+    ];
+    const files = ['README.md', ...sources(join(root, 'src')).map((f) => relative(root, f))];
+    const hits = files.flatMap((file) => {
+      const text = readFileSync(join(root, file), 'utf8');
+      return stale.filter((re) => re.test(text)).map((re) => `${file}: ${re.source}`);
+    });
+    expect(hits).toEqual([]);
+  });
+});
+
+describe('the layout move never triggers Obsidian link updates (review)', () => {
+  // `FileManager.renameFile` runs Obsidian's link update, and with the default
+  // "Automatically update internal links" off that update opens a blocking
+  // "Update links?" modal per moved page with incoming links; the sync awaits
+  // each one. `Vault.rename` never touches links, and `[[Concepts/Foo]]` still
+  // resolves by suffix (spec D4).
+  const code = readFileSync(join(__dirname, '..', 'src', 'shell', 'vault.ts'), 'utf8')
+    .split('\n')
+    .filter((line) => !/^\s*(\*|\/\/|\/\*)/.test(line))
+    .join('\n');
+
+  it('does not call fileManager.renameFile', () => {
+    expect(code).not.toMatch(/fileManager\s*\??\.\s*renameFile\s*\(/);
+  });
+
+  it('moves the note with vault.rename', () => {
+    expect(code).toMatch(/this\.#app\.vault\.rename\(file, to\)/);
   });
 });

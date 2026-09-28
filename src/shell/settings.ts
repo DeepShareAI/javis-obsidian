@@ -312,7 +312,7 @@ export class JavisSettingTab extends PluginSettingTab {
     let pending = '';
     new Setting(containerEl)
       .setName('Add a folder')
-      .setDesc('Every note inside it, including subfolders, is uploaded. The wiki folders cannot be chosen.')
+      .setDesc('Every note inside it, including subfolders, is uploaded. The Javis-wiki folder cannot be chosen.')
       .addText((text) => {
         text.setPlaceholder('Journal').onChange((value) => {
           pending = value;
