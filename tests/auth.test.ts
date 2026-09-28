@@ -1088,6 +1088,52 @@ describe('grantedScopes', () => {
 });
 
 // ---------------------------------------------------------------------------
+// accountEmail: the signed-in account, for display only
+// (javis-server spec 2026-09-27-account-email-in-connection-design §3)
+// ---------------------------------------------------------------------------
+
+describe('accountEmail', () => {
+  const offline = (secrets: Record<string, string>) => harness(() => ({ status: 500, text: '' }), { secrets });
+
+  it('returns the email claim of the stored access token', () => {
+    const h = offline({
+      [SECRET_ACCESS_TOKEN]: jwt({ sub: 'user_1', email: 'sam@example.com' }),
+      [SECRET_REFRESH_TOKEN]: 'r',
+    });
+    expect(h.auth.accountEmail()).toBe('sam@example.com');
+  });
+
+  it('is null for a missing, non-string or empty claim', () => {
+    expect(offline({ [SECRET_ACCESS_TOKEN]: liveJwt, [SECRET_REFRESH_TOKEN]: 'r' }).auth.accountEmail()).toBeNull();
+    for (const email of [42, null, true, ['sam@example.com'], { v: 'sam@example.com' }, '']) {
+      const h = offline({ [SECRET_ACCESS_TOKEN]: jwt({ sub: 'user_1', email }), [SECRET_REFRESH_TOKEN]: 'r' });
+      expect(h.auth.accountEmail()).toBeNull();
+    }
+  });
+
+  it('is null without an access token or without a refresh token', () => {
+    expect(offline({ [SECRET_REFRESH_TOKEN]: 'r' }).auth.accountEmail()).toBeNull();
+    const accessOnly = offline({ [SECRET_ACCESS_TOKEN]: jwt({ sub: 'user_1', email: 'sam@example.com' }) });
+    expect(accessOnly.auth.accountEmail()).toBeNull();
+    expect(offline({}).auth.accountEmail()).toBeNull();
+  });
+
+  it('is null for an undecodable token', () => {
+    expect(offline({ [SECRET_ACCESS_TOKEN]: 'opaque', [SECRET_REFRESH_TOKEN]: 'r' }).auth.accountEmail()).toBeNull();
+    expect(offline({ [SECRET_ACCESS_TOKEN]: 'a.b.c', [SECRET_REFRESH_TOKEN]: 'r' }).auth.accountEmail()).toBeNull();
+  });
+
+  it('leaves accountKey on sub: the email is display text, never an identity', () => {
+    const h = offline({
+      [SECRET_ACCESS_TOKEN]: jwt({ sub: 'user_1', email: 'sam@example.com' }),
+      [SECRET_REFRESH_TOKEN]: 'r',
+      [SECRET_TOKEN_ORIGIN]: 'https://mcp.javis.is',
+    });
+    expect(h.auth.accountKey()).toBe('https://mcp.javis.is user_1');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Review of 0.2.0: the /wiki resource on every connect, and the audience check
 // ---------------------------------------------------------------------------
 

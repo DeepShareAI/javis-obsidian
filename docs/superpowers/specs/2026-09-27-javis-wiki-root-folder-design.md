@@ -217,8 +217,7 @@ Manual E2E, in the `Javis-wiki` vault, before tagging the release:
   the upload-guard sentence (≈ line 208), and the example paths
   (`Concepts/Agent-Builder.md`, `Sources/obsidian-note-<id>.md`).
 - Release notes: describe the move and the rollback caveat.
-- javis-server: no change. Source pages for uploaded notes now land in
-  `Javis-wiki/Sources/`.
+- javis-server: the upload path guard had to change too (javis-server PR #162): it refused notes under the root type folders and now refuses only `Javis-wiki/`. Source pages for uploaded notes now land in `Javis-wiki/Sources/`.
 
 ## Out of scope
 

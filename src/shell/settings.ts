@@ -21,8 +21,9 @@
 import { App, Notice, PluginSettingTab, Setting } from 'obsidian';
 
 import { normalizeFolder, validateFolders } from '../core/folders';
-import type { AuthStatus, LastUploadReport } from './contracts';
+import type { LastUploadReport } from './contracts';
 import { DEFAULT_BASE_URL, DEFAULT_SETTINGS } from './contracts';
+import { connectionStatusText } from './connection-status';
 import { isJavisError } from './errors';
 import { FolderSuggest } from './folder-suggest';
 import { describeHeld } from './review-modal';
@@ -51,14 +52,6 @@ const SKIP_TEXT: Record<string, string> = {
   'wiki-page': 'a page Javis wrote; the wiki is never uploaded back to itself',
 };
 
-
-/** What the three connection states say, and what the button does next. */
-const STATUS_TEXT: Record<AuthStatus, string> = {
-  disconnected: 'Not connected. Connect to sign in with your Javis account.',
-  connected: 'Connected. Your wiki pages sync into this vault, one way.',
-  'needs-reconnect':
-    'The saved sign-in was rejected. Reconnect to sign in again — no notes have been changed.',
-};
 
 export class JavisSettingTab extends PluginSettingTab {
   private readonly plugin: JavisWikiSyncPlugin;
@@ -108,8 +101,10 @@ export class JavisSettingTab extends PluginSettingTab {
     new Setting(containerEl).setName('Connection').setHeading();
 
     const status = this.plugin.auth.status();
+    // Read on every display(), never stored: the email lives only in the
+    // keychain-held token. `text` sets textContent, so it cannot inject markup.
     containerEl.createEl('p', {
-      text: STATUS_TEXT[status],
+      text: connectionStatusText(status, this.plugin.auth.accountEmail()),
       cls: 'setting-item-description',
     });
     // §C.3: a grant from before 0.2.0 names the old audience, which the server

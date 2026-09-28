@@ -75,6 +75,13 @@ you to reconnect once, and that connection also grants `wiki:write` — the
 permission to store the notes you upload. You can decline it on the consent
 screen and keep the read-only sync.
 
+Once connected, the settings tab shows which Javis account this device uses:
+*Connected as you@example.com.* The consent page names the account too, so you
+can choose **Deny** if it is the wrong one. A connection made before the Javis
+server started sending the email shows plain *Connected.* until its next token
+refresh, within an hour. The email is read from the token in your keychain and
+is never written to the vault.
+
 Both tokens are stored in your OS keychain. **Disconnect** clears them. If the
 connection ever dies for good, the plugin says so once and stops — it does not
 retry in a loop or quietly sync stale data.
