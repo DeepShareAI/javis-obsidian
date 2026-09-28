@@ -546,14 +546,26 @@ export class ObsidianVaultAdapter implements VaultAdapter, UploadVault {
   }
 
   /**
-   * Remove an emptied 0.2.x root wiki folder. `children` is Obsidian's view,
-   * which omits OS files such as `.DS_Store`; a folder holding one makes
-   * `vault.delete` throw, and the caller treats that as "leave it".
+   * Remove an emptied 0.2.x root wiki folder, and only an empty one.
+   *
+   * Neither `vault.delete(folder)` nor `adapter.rmdir(path, false)` can do this
+   * on Obsidian 1.13: both go through Node's `rm` without `recursive` and throw
+   * "rm returned EISDIR" even for a folder that is empty on disk (E2E run of
+   * 2026-09-27; tests/vault-adapter-folders.test.ts). `rmdir(path, true)` works,
+   * so emptiness is established first from `adapter.list`, which — unlike the
+   * folder's `children` — also reports hidden files such as `.DS_Store`. A
+   * folder holding anything at all is left alone.
    */
   async removeFolderIfEmpty(path: string): Promise<void> {
     const folder = this.#app.vault.getFolderByPath(path);
-    if (folder === null || folder.children.length > 0) return;
-    await this.#app.vault.delete(folder);
+    if (folder === null) return;
+    const listed = await this.#app.vault.adapter.list(folder.path);
+    if (listed.files.length > 0 || listed.folders.length > 0) return;
+    await this.#app.vault.adapter.rmdir(folder.path, true);
+  }
+
+  async folderExists(path: string): Promise<boolean> {
+    return this.#app.vault.getFolderByPath(this.#resolve(path)) !== null;
   }
 
   // -- the upload half (spec 2026-09-24 §F.2) ------------------------------

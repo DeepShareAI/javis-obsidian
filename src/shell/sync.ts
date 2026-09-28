@@ -37,7 +37,7 @@ import { isWikiPageText, readSourceId } from '../core/note-text';
 import { legacyDestination, planLayoutMove, type LayoutCandidate, type LayoutMove } from '../core/layout-move';
 import { reconcile } from '../core/reconcile';
 import { applyTombstone, tombstoneFrontmatter } from '../core/render';
-import { pathForPage } from '../core/slug';
+import { TYPE_TO_PLURAL, WIKI_ROOT, pathForPage } from '../core/slug';
 import type {
   ExportBatch,
   ServerPage,
@@ -232,8 +232,10 @@ export interface LayoutMoveResult {
  * that will not download) is logged and skipped: most notes in these folders
  * are the user's own, and one unreadable file must not stop every sync.
  *
- * Only a root folder that lost a note this run is offered to
- * `removeFolderIfEmpty`; a failure there is logged and ignored.
+ * A root type folder is offered to `removeFolderIfEmpty` when this run moved a
+ * note out of it, or when it exists next to its `Javis-wiki/` twin — so a
+ * removal that failed is retried on every sync. The adapter removes it only
+ * when it is empty on disk; a failure there is logged and ignored.
  *
  * `onMoved` receives the result before this returns or throws, so the moves
  * that succeeded are still reported when another one failed.
@@ -282,7 +284,16 @@ export async function moveLegacyLayout(
       failures.push({ path: move.from, message: error instanceof Error ? error.message : String(error) });
     }
   }
-  for (const folder of emptied) {
+  // Also every root type folder an earlier run left behind (E2E-07: a removal
+  // that failed is retried on every sync, not only in the run that emptied it).
+  // Only when `Javis-wiki/` has the same folder, i.e. the move happened; the
+  // adapter still removes nothing that holds a file.
+  const cleanup = new Set(emptied);
+  for (const plural of [...new Set(Object.values(TYPE_TO_PLURAL))].sort()) {
+    if (cleanup.has(plural)) continue;
+    if ((await vault.folderExists(plural)) && (await vault.folderExists(`${WIKI_ROOT}/${plural}`))) cleanup.add(plural);
+  }
+  for (const folder of cleanup) {
     try {
       await vault.removeFolderIfEmpty(folder);
     } catch (error) {

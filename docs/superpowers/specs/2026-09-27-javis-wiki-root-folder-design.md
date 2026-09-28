@@ -98,7 +98,11 @@ the test fake:
   sync would wait on each one. `vault.rename` never touches links.
   Rejects with `VaultWriteError` if `to` exists.
 - `removeFolderIfEmpty(path: string): Promise<void>` deletes the folder only
-  when it has no children. It never deletes files.
+  when `adapter.list` shows it empty on disk, hidden files included, then calls
+  `adapter.rmdir(path, true)`. It never deletes files. (E2E 2026-09-27: on
+  Obsidian 1.13 `vault.delete(folder)` and `adapter.rmdir(path, false)` both
+  throw "rm returned EISDIR" even for an empty folder.)
+- `folderExists(path: string): Promise<boolean>`, for the cleanup in step 4 below.
 
 `MANAGED_FOLDERS` becomes the nine folders prefixed with `Javis-wiki/`.
 
@@ -113,8 +117,11 @@ The move is the first step of `runSync`, before `resolveCursor`:
    duplicate at the new path.
 3. `planLayoutMove(candidates, existingPaths)`.
 4. Apply each move with `rename`. Afterwards call `removeFolderIfEmpty` on each
-   root folder that had at least one successful move this run. Untouched root
-   folders are left alone, even when empty; they may be the user's.
+   root type folder that had a note moved out of it this run, and on each root
+   type folder that exists next to its `Javis-wiki/` twin, so a removal that
+   failed is retried on every sync (E2E-07, decision 2026-09-27). The adapter
+   removes a folder only when it is empty on disk, so an empty root `Topics/`
+   the user made next to `Javis-wiki/Topics/` goes too; nothing is lost.
 5. Continue with the normal delta sync.
 
 `SyncResult` gains `moved: number` and `moveConflicts: LayoutMove[]`.
@@ -148,7 +155,7 @@ root, config folder, hidden, duplicate and nesting rules are unchanged.
 | A root note's frontmatter block will not parse, but it has a top-level `javis_slug:`/`javis_type:` line (hand-broken YAML) | Treated as a failed move: the other moves still run, then the sync **stops before the download** and the failure notice names the note. Skipping it would let `create` write a second copy under `Javis-wiki/`. Once the user fixes its YAML, the next sync moves it. |
 | A root note cannot be read at all (no permission, a cloud placeholder that fails to download) | Logged to the console and skipped; the other moves and the download continue. Most notes in these folders are the user's own, and one unreadable file must not stop every sync. If it was a Javis note it stays at the root; once readable, the next sync moves it or reports it as a conflict. |
 | Destination already exists | Root file left in place, reported as a conflict. Sync continues and updates the `Javis-wiki/` copy. The user picks which copy to keep. |
-| `removeFolderIfEmpty` throws | Logged and ignored; an empty folder is harmless and the next sync retries. |
+| `removeFolderIfEmpty` throws | Logged and ignored; an empty folder is harmless and every later sync retries it (step 4). |
 | Nothing to move | Steady state. Only the folder listing runs, with no notice. |
 
 **Links elsewhere in the vault.** The move uses `vault.rename`, so Obsidian
@@ -182,7 +189,8 @@ Unit tests (vitest):
   - A failed `rename` stops the run before any `create`.
   - A conflict still lets the `Javis-wiki/` copy update.
   - A second run makes no moves.
-  - Only root folders touched by a move are removed, and only when empty.
+  - Root type folders are removed when a move emptied them or when their
+    `Javis-wiki/` twin exists, and only when empty on disk.
 - `tests/slug.test.ts`: `pathForPage` returns `Javis-wiki/…`.
 - `tests/folders.test.ts`: `Javis-wiki` and `Javis-wiki/Topics` are refused. A
   root `Topics` folder is now allowed.

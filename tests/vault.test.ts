@@ -383,7 +383,7 @@ describe('the plugin never deletes or trashes a vault file (§F.2)', () => {
   // a FOLDER, and only after checking it has no children. It can never take a
   // note with it. Exempted by exact file and line text, so any other removal —
   // including a second `vault.delete` in the same file — still fails.
-  const SANCTIONED = new Set([`${join('src', 'shell', 'vault.ts')}: await this.#app.vault.delete(folder);`]);
+  const SANCTIONED = new Set([`${join('src', 'shell', 'vault.ts')}: await this.#app.vault.adapter.rmdir(folder.path, true);`]);
 
   it('no source file calls a vault, adapter or fileManager removal API', () => {
     // Code lines only: the prohibition is quoted in several doc comments.

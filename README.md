@@ -109,8 +109,9 @@ they are and keep resolving.
 vault root. The first sync after upgrading moves every Javis note from those
 folders into `Javis-wiki/`, including notes you edited or adopted. Your own
 notes in those folders stay where they are, including notes you upload
-(any note with a `javis_source_id`). A root folder is removed only if
-the move left it empty. If `Javis-wiki/` already has a note with the same
+(any note with a `javis_source_id`). A root wiki folder is removed once it
+is completely empty (no files, hidden or not); a later sync retries if it
+could not be removed the first time. If `Javis-wiki/` already has a note with the same
 name, the root copy is left alone and Sync now tells you. Downgrading to
 0.2.x writes a fresh copy of the wiki at the vault root.
 

@@ -49,6 +49,8 @@ class FakeVault implements VaultAdapter {
    * on a folder that still holds a `.DS_Store` it does not list as a child.
    */
   readonly failRmdir = new Set<string>();
+  /** Folders that exist with no file under them (a fake vault otherwise derives folders from file paths). */
+  readonly emptyFolders = new Set<string>();
 
   seed(path: string, frontmatter: Frontmatter | null, content = ''): void {
     this.files.set(path, { content, frontmatter });
@@ -110,6 +112,11 @@ class FakeVault implements VaultAdapter {
   async removeFolderIfEmpty(path: string): Promise<void> {
     this.calls.push(`rmdir-if-empty ${path}`);
     if (this.failRmdir.has(path)) throw new Error(`ENOTEMPTY: directory not empty, rmdir '${path}'`);
+    this.emptyFolders.delete(path);
+  }
+
+  async folderExists(path: string): Promise<boolean> {
+    return this.emptyFolders.has(path) || [...this.files.keys()].some((p) => p.startsWith(`${path}/`));
   }
 
   #guard(path: string): void {
@@ -923,7 +930,9 @@ describe('moveLegacyLayout', () => {
       moved: 0,
       conflicts: [{ from: 'Concepts/A.md', to: 'Javis-wiki/Concepts/A.md' }],
     });
-    expect(vault.calls).toEqual([]);
+    // No move. The root folder is offered for cleanup (it sits next to its
+    // Javis-wiki twin), and the adapter keeps it because it still holds A.md.
+    expect(vault.calls).toEqual(['rmdir-if-empty Concepts']);
     expect(vault.files.get('Concepts/A.md')?.content).toBe('old');
     expect(vault.files.get('Javis-wiki/Concepts/A.md')?.content).toBe('new');
   });
@@ -1013,6 +1022,40 @@ describe('moveLegacyLayout', () => {
 
     expect(await moveLegacyLayout(vault)).toEqual({ moved: 0, conflicts: [] });
     expect(vault.calls).toEqual([]);
+  });
+
+  it('retries cleanup on a later sync: an empty root type folder whose Javis-wiki twin exists (E2E-07)', async () => {
+    const vault = new FakeVault();
+    vault.seed('Javis-wiki/Topics/T.md', javisFm('topic', 'T'));
+    vault.seed('Javis-wiki/Gaps/G.md', javisFm('gap', 'G'));
+    // Left behind by an earlier run whose folder removal failed.
+    vault.emptyFolders.add('Topics');
+    vault.emptyFolders.add('Gaps');
+
+    expect(await moveLegacyLayout(vault)).toEqual({ moved: 0, conflicts: [] });
+    expect(vault.calls).toEqual(['rmdir-if-empty Gaps', 'rmdir-if-empty Topics']);
+    expect(await vault.folderExists('Topics')).toBe(false);
+  });
+
+  it('leaves a root type folder alone when Javis-wiki has no folder of that name', async () => {
+    const vault = new FakeVault();
+    vault.seed('Javis-wiki/Topics/T.md', javisFm('topic', 'T'));
+    vault.emptyFolders.add('Gaps');
+
+    await moveLegacyLayout(vault);
+
+    expect(vault.calls).toEqual([]);
+  });
+
+  it('offers a folder once, whether the move just emptied it or an earlier run left it', async () => {
+    const vault = new FakeVault();
+    vault.seed('Concepts/A.md', javisFm('concept', 'A'));
+    vault.seed('Concepts/mine.md', null, 'my own note');
+
+    await moveLegacyLayout(vault);
+
+    expect(vault.calls.filter((c) => c.startsWith('rmdir-if-empty'))).toEqual(['rmdir-if-empty Concepts']);
+    expect(vault.files.has('Concepts/mine.md')).toBe(true);
   });
 });
 

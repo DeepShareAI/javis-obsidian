@@ -434,11 +434,14 @@ export interface VaultAdapter {
   rename(from: string, to: string): Promise<void>;
 
   /**
-   * Delete the folder at `path` only when Obsidian lists nothing inside it; a
-   * no-op when it is absent or not empty. The only removal this contract
-   * allows, and it can never take a note with it.
+   * Delete the folder at `path` only when the DISK lists nothing inside it,
+   * hidden files included; a no-op when it is absent or not empty. The only
+   * removal this contract allows, and it can never take a note with it.
    */
   removeFolderIfEmpty(path: string): Promise<void>;
+
+  /** Whether a folder exists at `path` (the `Javis-wiki` segment matched in any case). */
+  folderExists(path: string): Promise<boolean>;
 }
 
 // ---------------------------------------------------------------------------
