@@ -772,6 +772,24 @@ export class JavisOAuth implements JavisAuth {
     return canonical === null ? null : `${canonical} ${sub}`;
   }
 
+  /**
+   * The signed-in account's email, from the stored access token's `email`
+   * claim (javis-server spec 2026-09-27-account-email-in-connection-design,
+   * D2); null when there is no access or refresh token, the token does not
+   * decode, or the claim is missing, not a string, or empty. Tokens minted
+   * before the server added the claim have none until their next refresh (D5).
+   *
+   * Display text only. Never used for any decision: `accountKey()` and the
+   * upload account-mismatch rule stay on `sub`. Read from the keychain on each
+   * call and never persisted, because `data.json` lives inside the vault.
+   */
+  accountEmail(): string | null {
+    const access = this.readSecret(SECRET_ACCESS_TOKEN);
+    if (!access || !this.readSecret(SECRET_REFRESH_TOKEN)) return null;
+    const email = decodeJwtClaims(access)?.['email'];
+    return typeof email === 'string' && email !== '' ? email : null;
+  }
+
   async connect(options: ConnectOptions = {}): Promise<void> {
     // Before binding a port or opening a browser: a refresh token (and, with
     // uploads on, a `wiki:write` grant) must never be minted over cleartext
