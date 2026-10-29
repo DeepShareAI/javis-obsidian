@@ -25,7 +25,8 @@ import type {
   VaultNote,
 } from '../src/shell/contracts';
 import { HttpError, SyncCancelledError, VaultWriteError, AuthRevokedError } from '../src/shell/errors';
-import { applyAction, decideAction, moveLegacyLayout, resolveCursor, summarize, syncOnce } from '../src/shell/sync';
+import { applyAction, decideAction, moveLegacyLayout, resolveCursor, RESYNC_SINCE, summarize, syncOnce } from '../src/shell/sync';
+import { sanitizeSettings } from '../src/shell/settings-load';
 
 // ---------------------------------------------------------------------------
 // Fakes
@@ -226,13 +227,13 @@ describe('resolveCursor', () => {
     expect(await resolveCursor(new FakeVault(), null)).toBeNull();
   });
 
-  it('forces a full export while pendingFullResync is set, ignoring both cursors', async () => {
+  it('forces a full re-read (F27: an epoch delta) while pendingFullResync is set, ignoring both cursors', async () => {
     const vault = new FakeVault();
     vault.seed('Javis-wiki/Concepts/A.md', { [JAVIS_REV]: '2026-09-12T00:00:00Z' });
     const spy = vi.spyOn(vault, 'listMarkdownFiles');
 
-    expect(await resolveCursor(vault, '2026-09-13T04:12:00Z', true)).toBeNull();
-    expect(await resolveCursor(vault, null, true)).toBeNull();
+    expect(await resolveCursor(vault, '2026-09-13T04:12:00Z', true)).toBe(RESYNC_SINCE);
+    expect(await resolveCursor(vault, null, true)).toBe(RESYNC_SINCE);
     // Nothing to scan for: a full export is a full export.
     expect(spy).not.toHaveBeenCalled();
   });
@@ -715,10 +716,10 @@ describe('syncOnce', () => {
     // row that failed, so a plain `since` would never ask for it again.
     expect(await resolveCursor(vault, null)).toBe('2026-09-13T02:00:00Z');
 
-    // With the flag honoured, the next run asks for everything.
+    // With the flag honoured, the next run asks for everything (F27: an epoch delta).
     const second = new FakeApi([{ pages: [], serverTime: '2026-09-13T07:00:00Z' }]);
     await syncOnce(deps({ api: second, vault, pendingFullResync: first.pendingFullResync }));
-    expect(second.sinceSeen).toEqual([null]);
+    expect(second.sinceSeen).toEqual([RESYNC_SINCE]);
   });
 
   it('does NOT raise pendingFullResync when the failing run used the cached cursor', async () => {
@@ -762,6 +763,30 @@ describe('syncOnce', () => {
 
     expect(api.sinceSeen).toHaveLength(1);
     expect(result.failures).toEqual([]);
+    expect(result.pendingFullResync).toBe(false);
+    expect(result.nextCursor).toBe('2026-09-13T06:00:00Z');
+  });
+
+  it('F27: the epoch-bump resync still delivers a tombstone from before the upgrade', async () => {
+    // A 0.3.1 data.json: no pageTypesEpoch, a cached cursor from T0.
+    const settings = sanitizeSettings({ cachedCursor: '2026-09-13T04:00:00Z' });
+    expect(settings.pendingFullResync).toBe(true);
+
+    const vault = new FakeVault();
+    vault.seed('Javis-wiki/Concepts/Gone.md', javisFm('concept', 'Gone', '2026-09-12T00:00:00Z'),
+      `${MARKER_START}\nold\n${MARKER_END}\n`);
+    // Tombstoned at T1, between the last 0.3.1 sync and the first 0.3.2 run.
+    const api = new FakeApi([
+      { pages: [page({ slug: 'Gone', deleted_at: '2026-09-13T05:00:00Z' })], serverTime: '2026-09-13T06:00:00Z' },
+    ]);
+
+    const result = await syncOnce(deps({
+      api, vault, cachedCursor: settings.cachedCursor, pendingFullResync: settings.pendingFullResync,
+    }));
+
+    expect(api.sinceSeen).toEqual([RESYNC_SINCE]);
+    expect(RESYNC_SINCE).not.toBeNull();
+    expect(result.tombstoned).toBe(1);
     expect(result.pendingFullResync).toBe(false);
     expect(result.nextCursor).toBe('2026-09-13T06:00:00Z');
   });

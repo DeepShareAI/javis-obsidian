@@ -20,7 +20,7 @@
  */
 
 import { SOURCE_ID_KEY } from './note-text';
-import { TYPE_TO_PLURAL, WIKI_ROOT } from './slug';
+import { WIKI_ROOT } from './slug';
 import type { Frontmatter } from './types';
 import { JAVIS_SLUG, JAVIS_TYPE } from './types';
 
@@ -41,9 +41,29 @@ export interface LayoutMovePlan {
   conflicts: LayoutMove[];
 }
 
-/** Lowercased folder name → canonical spelling, for the nine page-type folders. */
+/**
+ * The nine root folders 0.2.x wrote, frozen.
+ *
+ * Written out rather than derived from `TYPE_TO_PLURAL`: that map gained
+ * `task: 'Tasks'` in 0.3.2 (R11), and 0.2.x never wrote `Tasks/`. Deriving it
+ * would make `legacyDestination` claim a user's root `Tasks/*.md` and the sync
+ * cleanup remove a user's own empty root `Tasks` folder.
+ */
+export const LEGACY_PLURALS: readonly string[] = Object.freeze([
+  'Comparisons',
+  'Concepts',
+  'Decisions',
+  'Entities',
+  'Gaps',
+  'Questions',
+  'Sources',
+  'Syntheses',
+  'Topics',
+]);
+
+/** Lowercased folder name → canonical spelling, for the nine legacy folders. */
 const CANONICAL: ReadonlyMap<string, string> = new Map(
-  Object.values(TYPE_TO_PLURAL).map((plural) => [plural.toLowerCase(), plural]),
+  LEGACY_PLURALS.map((plural) => [plural.toLowerCase(), plural]),
 );
 
 /**

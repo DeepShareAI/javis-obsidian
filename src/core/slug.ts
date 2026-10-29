@@ -17,7 +17,15 @@
 export const WIKI_ROOT = 'Javis-wiki';
 
 /**
- * Inverse of `PLURAL_TO_TYPE` in app/tools/wiki/links.py.
+ * Inverse of `PLURAL_TO_TYPE` in app/tools/wiki/links.py, plus `task`.
+ *
+ * `task` (spec 2026-10-28 memory-export-supersession, R11) is deliberately NOT
+ * in the server's `PLURAL_TO_TYPE`: task pages are rendered by code from the
+ * task ledger and are never link targets, so the server keeps `[[Tasks/...]]`
+ * out of link parsing. This map is therefore no longer an exact inverse. The
+ * 0.2.x layout move pins itself to the nine legacy folders
+ * (`LEGACY_PLURALS` in src/core/layout-move.ts) because 0.2.x never wrote
+ * `Tasks/`.
  *
  * Copied rather than fetched: the folder names are also the link prefixes
  * already baked into every page body (`[[Concepts/Foo]]`), so they are part of
@@ -34,6 +42,7 @@ export const TYPE_TO_PLURAL: Readonly<Record<string, string>> = {
   synthesis: 'Syntheses',
   decision: 'Decisions',
   gap: 'Gaps',
+  task: 'Tasks',
 };
 
 /**

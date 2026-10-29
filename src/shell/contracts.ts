@@ -823,6 +823,16 @@ export interface JavisSettings {
    */
   pendingFullResync: boolean;
 
+  /**
+   * The `PAGE_TYPES_EPOCH` this `data.json` was last loaded under (F4, spec
+   * 2026-10-28 memory-export-supersession R11). An older plugin skips a page
+   * type it does not know as `unknown-type`, and a skip is not a failure, so
+   * that run still advances the cursor past the row. When the epoch on disk
+   * is older than this build's, `sanitizeSettings` sets `pendingFullResync`
+   * once, so the pages the old build skipped (`task`, added in 0.3.2) arrive.
+   */
+  pageTypesEpoch: number;
+
   /** ISO8601 of the last completed run, for the settings tab. Never a cursor. */
   lastSyncAt: string | null;
   /** One-line human status from the last run, success or failure. */
@@ -874,6 +884,13 @@ export interface JavisSettings {
   uploadAccount: string | null;
 }
 
+/**
+ * Bumped whenever `TYPE_TO_PLURAL` (src/core/slug.ts) gains a page type, so a
+ * vault synced by a build that skipped that type resyncs once (F4).
+ * 1 = 0.3.2, `task`.
+ */
+export const PAGE_TYPES_EPOCH = 1;
+
 /** How many removed ids `uploadRemovedIds` keeps (review). */
 export const REMOVED_IDS_CAP = 200;
 
@@ -885,6 +902,7 @@ export const DEFAULT_SETTINGS: JavisSettings = {
   intervalMinutes: 30,
   cachedCursor: null,
   pendingFullResync: false,
+  pageTypesEpoch: PAGE_TYPES_EPOCH,
   lastSyncAt: null,
   lastSyncSummary: null,
   uploadFolders: [],

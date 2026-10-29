@@ -7,7 +7,8 @@
 
 import { describe, expect, expectTypeOf, it } from 'vitest';
 
-import { DEFAULT_SETTINGS } from '../src/shell/contracts';
+import { DEFAULT_SETTINGS, PAGE_TYPES_EPOCH } from '../src/shell/contracts';
+import { TYPE_TO_PLURAL } from '../src/core/slug';
 import { joinMissing, sanitizeMissing, sanitizeSettings, splitMissing } from '../src/shell/settings-load';
 import { InsufficientScopeError, isAuthFatal } from '../src/shell/errors';
 
@@ -157,5 +158,42 @@ describe('InsufficientScopeError', () => {
     expect(err.retryable).toBe(false);
     expect(isAuthFatal(err)).toBe(false);
     expect(err.message).toMatch(/Reconnect/);
+  });
+});
+
+describe('F4 / R11 / TC-S4-1: a vault synced by a build without `task` resyncs once on upgrade', () => {
+  const old031 = {
+    baseUrl: 'https://mcp.javis.is',
+    cachedCursor: '2026-10-28T12:00:00Z',
+    pendingFullResync: false,
+    lastSyncAt: '2026-10-28T12:00:00Z',
+  };
+
+  it('a 0.3.1 data.json (no pageTypesEpoch) forces one full resync and records the epoch', () => {
+    const s = sanitizeSettings(old031);
+    expect(s.pendingFullResync).toBe(true);
+    expect(s.pageTypesEpoch).toBe(PAGE_TYPES_EPOCH);
+  });
+
+  it('an older epoch forces it too', () => {
+    expect(sanitizeSettings({ ...old031, pageTypesEpoch: PAGE_TYPES_EPOCH - 1 }).pendingFullResync).toBe(true);
+    expect(sanitizeSettings({ ...old031, pageTypesEpoch: 'x' }).pendingFullResync).toBe(true);
+  });
+
+  it('once saved under this epoch, a clean run is not resynced again', () => {
+    const s = sanitizeSettings({ ...old031, pageTypesEpoch: PAGE_TYPES_EPOCH });
+    expect(s.pendingFullResync).toBe(false);
+    expect(s.cachedCursor).toBe('2026-10-28T12:00:00Z');
+  });
+
+  it('a pending resync from a failed run is kept', () => {
+    expect(
+      sanitizeSettings({ ...old031, pageTypesEpoch: PAGE_TYPES_EPOCH, pendingFullResync: true }).pendingFullResync,
+    ).toBe(true);
+  });
+
+  it('a fresh install (no data.json) needs no resync', () => {
+    expect(sanitizeSettings(null).pendingFullResync).toBe(false);
+    expect(TYPE_TO_PLURAL['task']).toBe('Tasks');
   });
 });
