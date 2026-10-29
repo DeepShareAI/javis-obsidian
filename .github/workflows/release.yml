@@ -14,6 +14,11 @@ on:
         description: Existing tag to build and publish (e.g. 0.3.3)
         required: true
 
+# One run per tag: a tag push and a manual run must not race on --clobber.
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
 permissions:
   contents: write
   id-token: write
@@ -24,11 +29,12 @@ jobs:
     runs-on: ubuntu-latest
     env:
       TAG: ${{ inputs.tag || github.ref_name }}
-      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.TAG }}
+          # Keep the write token out of .git/config, where npm install scripts could read it.
+          persist-credentials: false
 
       - uses: actions/setup-node@v4
         with:
@@ -52,8 +58,16 @@ jobs:
         with:
           subject-path: main.js
 
-      - name: Create the release if missing, then upload the assets
+      # A new release is created with its assets in the same call, so it is
+      # never visible without main.js (a BRAT check in that gap would fail).
+      - name: Publish the assets
+        # The write token is given to this step only, never to npm ci/test/build.
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          gh release view "$TAG" >/dev/null 2>&1 || \
-            gh release create "$TAG" --verify-tag --title "$TAG" --generate-notes
-          gh release upload "$TAG" main.js manifest.json --clobber
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" main.js manifest.json --clobber -R "$GITHUB_REPOSITORY"
+          else
+            gh release create "$TAG" main.js manifest.json -R "$GITHUB_REPOSITORY" \
+              --verify-tag --title "$TAG" --generate-notes
+          fi
