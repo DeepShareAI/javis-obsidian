@@ -93,7 +93,7 @@ export async function resolveCursor(
   // (F27).
   if (pendingFullResync) return RESYNC_SINCE;
   if (typeof cachedCursor === 'string' && cachedCursor !== '') return cachedCursor;
-  return maxRevision(await vault.listMarkdownFiles());
+  return maxRevision(await vault.listMarkdownFiles([WIKI_ROOT], { recursive: true }));
 }
 
 /**
@@ -260,7 +260,9 @@ export async function moveLegacyLayout(
   vault: VaultAdapter,
   onMoved?: (result: LayoutMoveResult) => void,
 ): Promise<LayoutMoveResult> {
-  const listed = await vault.listMarkdownFiles();
+  // Only the nine legacy root folders, direct children: `legacyDestination`
+  // accepts nothing else.
+  const listed = await vault.listMarkdownFiles(vault.legacyRootFolders(), { recursive: false });
   const candidates: LayoutCandidate[] = [];
   const failures: { path: string; message: string }[] = [];
   for (const note of listed) {
@@ -287,7 +289,10 @@ export async function moveLegacyLayout(
     }
     candidates.push({ path: note.path, frontmatter });
   }
-  const plan = planLayoutMove(candidates, new Set(listed.map((note) => note.path)));
+  // Destinations live under Javis-wiki/, so a conflict is checked against its
+  // notes too (and against the legacy notes, for case-variant sources).
+  const wiki = await vault.listMarkdownFiles([WIKI_ROOT], { recursive: true });
+  const plan = planLayoutMove(candidates, new Set([...listed, ...wiki].map((note) => note.path)));
 
   let moved = 0;
   const emptied = new Set<string>();
@@ -436,7 +441,7 @@ export async function syncOnce(deps: SyncDeps): Promise<SyncResult> {
     // to a full export. A full export omits tombstones by design (§C), so a
     // deletion that happened while this cursor was broken is learned on the
     // next delta instead — an acceptable price for un-wedging the plugin.
-    const rescanned = maxRevision(await vault.listMarkdownFiles());
+    const rescanned = maxRevision(await vault.listMarkdownFiles([WIKI_ROOT], { recursive: true }));
     cursorFromCache = false;
     serverTime = await attempt(rescanned === since ? null : rescanned);
   }

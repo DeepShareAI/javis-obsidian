@@ -1,0 +1,73 @@
+# Builds, tests and publishes a release with a build-provenance attestation
+# for main.js (Obsidian review recommendation, 2026-10-28). Runs on a pushed
+# version tag (x.y.z, no "v", equal to manifest.json's version), or by hand for
+# an existing tag to rebuild and re-sign its assets.
+name: Release
+
+on:
+  push:
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]+'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to build and publish (e.g. 0.3.3)
+        required: true
+
+# One run per tag: a tag push and a manual run must not race on --clobber.
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+          # Keep the write token out of .git/config, where npm install scripts could read it.
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+
+      - name: Tag equals manifest version
+        run: |
+          version=$(node -p "require('./manifest.json').version")
+          if [ "$version" != "$TAG" ]; then
+            echo "::error::tag $TAG does not match manifest.json version $version"
+            exit 1
+          fi
+
+      - name: Attest main.js
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: main.js
+
+      # A new release is created with its assets in the same call, so it is
+      # never visible without main.js (a BRAT check in that gap would fail).
+      - name: Publish the assets
+        # The write token is given to this step only, never to npm ci/test/build.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" main.js manifest.json --clobber -R "$GITHUB_REPOSITORY"
+          else
+            gh release create "$TAG" main.js manifest.json -R "$GITHUB_REPOSITORY" \
+              --verify-tag --title "$TAG" --generate-notes
+          fi

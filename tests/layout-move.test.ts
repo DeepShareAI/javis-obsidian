@@ -5,7 +5,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { LEGACY_PLURALS, legacyDestination, planLayoutMove, type LayoutCandidate } from '../src/core/layout-move';
+import { isLegacyFolderName, LEGACY_PLURALS, legacyDestination, planLayoutMove, type LayoutCandidate } from '../src/core/layout-move';
 import { WIKI_ROOT } from '../src/core/slug';
 import {
   JAVIS_DELETED,
@@ -150,5 +150,15 @@ describe('planLayoutMove', () => {
     const first = planLayoutMove([note('Concepts/Foo.md', javis())], new Set(['Concepts/Foo.md']));
     const after = first.moves.map((m) => note(m.to, javis()));
     expect(planLayoutMove(after, new Set(after.map((n) => n.path)))).toEqual({ moves: [], conflicts: [] });
+  });
+});
+
+describe('isLegacyFolderName', () => {
+  it('matches the nine 0.2.x folders in any case, and never Tasks', () => {
+    expect(isLegacyFolderName('Topics')).toBe(true);
+    expect(isLegacyFolderName('topics')).toBe(true);
+    expect(isLegacyFolderName('CONCEPTS')).toBe(true);
+    expect(isLegacyFolderName('Tasks')).toBe(false);
+    expect(isLegacyFolderName('Journal')).toBe(false);
   });
 });

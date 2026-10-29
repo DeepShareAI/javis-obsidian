@@ -386,6 +386,19 @@ nowhere. Delete or trash a file, or rename one (apart from the one-time move of
 0.2.x wiki notes into `Javis-wiki/` on upgrade). Run on mobile. Run while
 Obsidian is closed.
 
+## Files the plugin can see
+
+The plugin never lists every file in your vault. It looks only at:
+
+- **`Javis-wiki/`**, the folder it writes the wiki into, to sync it.
+- **The upload folders you choose** (and the folders inside them), to upload
+  your notes. Nothing outside them is read or sent.
+- **The nine 0.2.x root folders** (`Concepts/`, `Topics/`, …), only to move
+  old wiki notes into `Javis-wiki/` after an upgrade. Your own notes there are
+  never moved.
+- **Folder names**, to offer them in the settings folder picker. It reads no
+  file to do this and sends no folder name anywhere.
+
 ## Developing
 
 ```bash
@@ -403,6 +416,17 @@ part that talks to HTTP, OAuth, and the vault.
 Design: `javis-server/docs/superpowers/specs/2026-09-13-obsidian-wiki-sync-design.md`
 (the download) and `javis-server/docs/superpowers/specs/2026-09-24-obsidian-notes-ingest-design.md`
 (the upload).
+
+
+## Releasing
+
+Releases are built by GitHub Actions, never uploaded by hand. Bump the version
+(`npm version <x.y.z> --no-git-tag-version`, which also updates
+`manifest.json` and `versions.json`), merge, then push a tag that equals the
+version (`x.y.z`, no `v`). The **Release** workflow tests and builds the
+plugin, signs a build-provenance attestation for `main.js`, and uploads
+`main.js` and `manifest.json` to the release. Check an asset with
+`gh attestation verify main.js -R DeepShareAI/javis-obsidian`.
 
 ## License
 
