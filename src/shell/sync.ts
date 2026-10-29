@@ -34,10 +34,16 @@
 
 import { replaceMarkerBlock } from '../core/markers';
 import { isWikiPageText, readSourceId } from '../core/note-text';
-import { legacyDestination, planLayoutMove, type LayoutCandidate, type LayoutMove } from '../core/layout-move';
+import {
+  LEGACY_PLURALS,
+  legacyDestination,
+  planLayoutMove,
+  type LayoutCandidate,
+  type LayoutMove,
+} from '../core/layout-move';
 import { reconcile } from '../core/reconcile';
 import { applyTombstone, tombstoneFrontmatter } from '../core/render';
-import { TYPE_TO_PLURAL, WIKI_ROOT, pathForPage } from '../core/slug';
+import { WIKI_ROOT, pathForPage } from '../core/slug';
 import type {
   ExportBatch,
   ServerPage,
@@ -66,6 +72,15 @@ import { maxRevision, parentFolder } from './vault';
  * a previous run failed to write is invisible to it while its neighbours from
  * the same batch push the maximum past it. See `SyncResult.pendingFullResync`.
  */
+/**
+ * F27: what a "full resync" sends as `since`. Not `null` (a full export, which
+ * omits tombstones by design, §C): a delta from the epoch re-delivers every
+ * live page AND every tombstone, so a page deleted between the last good sync
+ * and the resync (for example across the 0.3.2 page-types epoch bump) is still
+ * marked deleted in the vault. A tombstone for a note never written is a skip.
+ */
+export const RESYNC_SINCE = '1970-01-01T00:00:00Z';
+
 export async function resolveCursor(
   vault: VaultAdapter,
   cachedCursor: string | null,
@@ -74,8 +89,9 @@ export async function resolveCursor(
   // `pendingFullResync` outranks both. A previous run failed on a note while
   // the rescan was the cursor, and the rescan cannot get back to it: the notes
   // that DID land raised `max(javis_rev)` above the one that did not. Only a
-  // full export re-delivers it.
-  if (pendingFullResync) return null;
+  // full re-read re-delivers it, sent as an epoch delta so tombstones come too
+  // (F27).
+  if (pendingFullResync) return RESYNC_SINCE;
   if (typeof cachedCursor === 'string' && cachedCursor !== '') return cachedCursor;
   return maxRevision(await vault.listMarkdownFiles());
 }
@@ -289,7 +305,7 @@ export async function moveLegacyLayout(
   // Only when `Javis-wiki/` has the same folder, i.e. the move happened; the
   // adapter still removes nothing that holds a file.
   const cleanup = new Set(emptied);
-  for (const plural of [...new Set(Object.values(TYPE_TO_PLURAL))].sort()) {
+  for (const plural of LEGACY_PLURALS) {
     if (cleanup.has(plural)) continue;
     if ((await vault.folderExists(plural)) && (await vault.folderExists(`${WIKI_ROOT}/${plural}`))) cleanup.add(plural);
   }

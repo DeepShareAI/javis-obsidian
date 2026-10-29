@@ -24,7 +24,7 @@ import { normalizeFolder } from '../core/folders';
 import { isUuid } from '../core/note-text';
 import type { MemoryEntry, UploadMemory } from '../core/upload';
 import type { JavisSettings, LastUploadReport } from './contracts';
-import { DEFAULT_SETTINGS, REMOVED_IDS_CAP } from './contracts';
+import { DEFAULT_SETTINGS, PAGE_TYPES_EPOCH, REMOVED_IDS_CAP } from './contracts';
 
 /** Bounds on the interval field. Below a minute the plugin is a busy-loop. */
 export const MIN_INTERVAL_MINUTES = 5;
@@ -170,5 +170,16 @@ export function sanitizeSettings(stored: unknown): JavisSettings {
     : [];
   s.uploadAccount = typeof s.uploadAccount === 'string' && s.uploadAccount !== '' ? s.uploadAccount : null;
   s.lastUpload = lastUpload(s.lastUpload);
+  s.pendingFullResync = s.pendingFullResync === true;
+  // F4: a data.json written before this build's page types (no epoch, or an
+  // older one) may have a cursor past rows the old build skipped as
+  // unknown-type. Resync once; the epoch is saved with the next settings
+  // write, and pendingFullResync stays set until a run completes cleanly. No
+  // data.json at all (a fresh install) needs no resync: it has no cursor.
+  const storedEpoch = isRecord(stored) ? stored['pageTypesEpoch'] : PAGE_TYPES_EPOCH;
+  if (typeof storedEpoch !== 'number' || !(storedEpoch >= PAGE_TYPES_EPOCH)) {
+    s.pendingFullResync = true;
+  }
+  s.pageTypesEpoch = PAGE_TYPES_EPOCH;
   return s;
 }

@@ -29,7 +29,7 @@ import {
 } from '../src/shell/vault';
 
 describe('MANAGED_FOLDERS', () => {
-  it('is the nine §E folders, under Javis-wiki', () => {
+  it('is the nine §E folders plus Tasks (R11 / TC-S4-1), under Javis-wiki', () => {
     expect(MANAGED_FOLDERS).toEqual([
       'Javis-wiki/Comparisons',
       'Javis-wiki/Concepts',
@@ -39,6 +39,7 @@ describe('MANAGED_FOLDERS', () => {
       'Javis-wiki/Questions',
       'Javis-wiki/Sources',
       'Javis-wiki/Syntheses',
+      'Javis-wiki/Tasks',
       'Javis-wiki/Topics',
     ]);
   });

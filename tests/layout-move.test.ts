@@ -5,8 +5,8 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { legacyDestination, planLayoutMove, type LayoutCandidate } from '../src/core/layout-move';
-import { TYPE_TO_PLURAL, WIKI_ROOT } from '../src/core/slug';
+import { LEGACY_PLURALS, legacyDestination, planLayoutMove, type LayoutCandidate } from '../src/core/layout-move';
+import { WIKI_ROOT } from '../src/core/slug';
 import {
   JAVIS_DELETED,
   JAVIS_REV,
@@ -32,9 +32,17 @@ describe('WIKI_ROOT', () => {
 
 describe('legacyDestination', () => {
   it('maps a direct child of each of the nine root folders under Javis-wiki', () => {
-    for (const plural of Object.values(TYPE_TO_PLURAL)) {
+    expect(LEGACY_PLURALS).toHaveLength(9);
+    for (const plural of LEGACY_PLURALS) {
       expect(legacyDestination(`${plural}/Foo.md`)).toBe(`Javis-wiki/${plural}/Foo.md`);
     }
+  });
+
+  it('R11 / TC-S4-1: leaves a root Tasks/ note alone (0.2.x never wrote Tasks/)', () => {
+    expect(LEGACY_PLURALS).not.toContain('Tasks');
+    expect(Object.isFrozen(LEGACY_PLURALS)).toBe(true);
+    expect(legacyDestination('Tasks/Foo.md')).toBeNull();
+    expect(legacyDestination('tasks/Foo.md')).toBeNull();
   });
 
   it('matches the folder in any case and writes the canonical spelling', () => {
