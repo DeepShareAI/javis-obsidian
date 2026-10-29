@@ -84,6 +84,11 @@ export function legacyDestination(path: string): string | null {
   return `${WIKI_ROOT}/${canonical}/${name}`;
 }
 
+/** Whether a root folder name is one of the nine 0.2.x type folders, in any case. */
+export function isLegacyFolderName(name: string): boolean {
+  return CANONICAL.has(name.toLowerCase());
+}
+
 /**
  * Present and non-empty. Not `typeof === 'string'`: YAML parses
  * `javis_slug: 2024` as a number, and that note is still ours.

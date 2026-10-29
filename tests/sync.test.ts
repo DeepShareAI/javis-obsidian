@@ -10,6 +10,7 @@
 
 import { describe, expect, it, vi } from 'vitest';
 
+import { isLegacyFolderName } from '../src/core/layout-move';
 import { JAVIS_DELETED, JAVIS_REV, JAVIS_SLUG, JAVIS_SYNC, JAVIS_TYPE } from '../src/core/types';
 import { MARKER_END, MARKER_START } from '../src/core/markers';
 import { TOMBSTONE_BANNER } from '../src/core/render';
@@ -93,11 +94,27 @@ class FakeVault implements VaultAdapter {
     file.frontmatter = { ...next };
   }
 
-  async listMarkdownFiles(): Promise<readonly VaultNote[]> {
-    return [...this.files.entries()].map(([path, file]) => ({
-      path,
-      frontmatter: this.uncached.has(path) ? null : file.frontmatter,
-    }));
+  async listMarkdownFiles(folders: readonly string[], opts: { recursive: boolean }): Promise<readonly VaultNote[]> {
+    const inFolder = (path: string) =>
+      folders.some((folder) => {
+        if (!path.startsWith(`${folder}/`)) return false;
+        return opts.recursive || !path.slice(folder.length + 1).includes('/');
+      });
+    return [...this.files.entries()]
+      .filter(([path]) => inFolder(path))
+      .map(([path, file]) => ({
+        path,
+        frontmatter: this.uncached.has(path) ? null : file.frontmatter,
+      }));
+  }
+
+  legacyRootFolders(): string[] {
+    const roots = new Set<string>();
+    for (const path of [...this.files.keys(), ...this.emptyFolders]) {
+      const top = path.split('/')[0]!;
+      if (path.includes('/') && isLegacyFolderName(top)) roots.add(top);
+    }
+    return [...roots];
   }
 
   async rename(from: string, to: string): Promise<void> {

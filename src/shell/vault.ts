@@ -41,11 +41,12 @@
  *    that can only be exercised against a real vault (§H).
  */
 
-import type { App, SecretStorage, TFile } from 'obsidian';
+import type { App, SecretStorage, TFile, TFolder } from 'obsidian';
 
 import { JAVIS_REV } from '../core/types';
 import { TYPE_TO_PLURAL, WIKI_ROOT } from '../core/slug';
 import { isUnderFolder } from '../core/folders';
+import { isLegacyFolderName } from '../core/layout-move';
 import { isUuid, SOURCE_ID_KEY } from '../core/note-text';
 import type { Frontmatter, SecretStore, UploadVault, VaultAdapter, VaultNote } from './contracts';
 import { VaultWriteError } from './errors';
@@ -508,9 +509,12 @@ export class ObsidianVaultAdapter implements VaultAdapter, UploadVault {
    * The frontmatter is copied rather than handed out: the cache object belongs
    * to Obsidian and callers must not be able to mutate it.
    */
-  async listMarkdownFiles(): Promise<readonly VaultNote[]> {
+  async listMarkdownFiles(
+    folders: readonly string[],
+    opts: { recursive: boolean },
+  ): Promise<readonly VaultNote[]> {
     const cache = this.#app.metadataCache;
-    return this.#app.vault.getMarkdownFiles().map((file) => {
+    return this.#markdownIn(folders, opts.recursive).map((file) => {
       const frontmatter = cache.getFileCache(file)?.frontmatter;
       return {
         path: file.path,
@@ -576,7 +580,10 @@ export class ObsidianVaultAdapter implements VaultAdapter, UploadVault {
   /** The markdown files under the selected folders, with a cached-id hint. Reads no file. */
   async listNotesIn(folders: readonly string[]): Promise<readonly { path: string; cachedSourceId: string | null }[]> {
     const cache = this.#app.metadataCache;
-    const byPath = new Map(this.#app.vault.getMarkdownFiles().map((file) => [file.path, file] as const));
+    // Only the selected folders are walked; `notesUnder` then applies the same
+    // case-sensitive filter as before, so the result is unchanged (the pinning
+    // test in tests/vault-adapter-folders.test.ts compares it with the old one).
+    const byPath = new Map(this.#markdownIn(folders, true).map((file) => [file.path, file] as const));
     return notesUnder([...byPath.keys()], folders).map((path) => ({
       path,
       cachedSourceId: cachedSourceIdHint(cache.getFileCache(byPath.get(path)!)?.frontmatter),
@@ -614,7 +621,45 @@ export class ObsidianVaultAdapter implements VaultAdapter, UploadVault {
     return this.#app.vault.getAllFolders(false).map((folder) => folder.path);
   }
 
+  /** The root folders that are 0.2.x type folders (any case), for the layout move. */
+  legacyRootFolders(): string[] {
+    return this.#app.vault
+      .getRoot()
+      .children.filter((child) => 'children' in child && isLegacyFolderName(child.name))
+      .map((child) => child.path);
+  }
+
   // -- internals ------------------------------------------------------------
+
+  /**
+   * The markdown files in `folders`, walked through the folder tree instead of
+   * the whole-vault markdown list, so the plugin never lists the whole vault (review
+   * recommendation "Vault Enumeration", 2026-10-28). Each folder name is
+   * resolved case-insensitively, as `#resolve` does for note paths. A missing
+   * folder yields nothing. Duplicates (a folder given twice, or nested in
+   * another) are dropped.
+   */
+  #markdownIn(folders: readonly string[], recursive: boolean): TFile[] {
+    const vault = this.#app.vault;
+    const seen = new Map<string, TFile>();
+    const walk = (folder: TFolder, deep: boolean): void => {
+      for (const child of folder.children) {
+        // A TFolder has `children`; a TFile does not. No `instanceof` (decision 2).
+        if ('children' in child) {
+          if (deep) walk(child as TFolder, true);
+        } else if ((child as TFile).extension === 'md') {
+          seen.set(child.path, child as TFile);
+        }
+      }
+    };
+    for (const folder of folders) {
+      if (folder === '') continue;
+      const real = this.#resolve(`${folder}/_`).replace(/\/_$/, '');
+      const node = vault.getFolderByPath(real);
+      if (node !== null) walk(node, recursive);
+    }
+    return [...seen.values()];
+  }
 
   #find(path: string): TFile | null {
     return this.#app.vault.getFileByPath(this.#resolve(path));

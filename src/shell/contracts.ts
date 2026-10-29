@@ -412,14 +412,19 @@ export interface VaultAdapter {
   writeFrontmatter(path: string, next: Frontmatter): Promise<void>;
 
   /**
-   * Every markdown file in the vault with its frontmatter, for the §F.1 rescan
-   * that recovers the cursor when `data.json` is lost.
+   * The markdown files in `folders` (recursively when `opts.recursive`) with
+   * their frontmatter: `Javis-wiki/` for the §F.1 rescan that recovers the
+   * cursor when `data.json` is lost, and the legacy root folders for the 0.2.x
+   * layout move. Never the whole vault (review recommendation, 2026-10-28).
    *
-   * Reads `metadataCache` rather than the files: this runs over the whole vault
-   * and staleness is harmless here — a rev that is one sync old only re-delivers
-   * pages the loop then skips as `unchanged`.
+   * Reads `metadataCache` rather than the files: staleness is harmless here — a
+   * rev that is one sync old only re-delivers pages the loop then skips as
+   * `unchanged`.
    */
-  listMarkdownFiles(): Promise<readonly VaultNote[]>;
+  listMarkdownFiles(folders: readonly string[], opts: { recursive: boolean }): Promise<readonly VaultNote[]>;
+
+  /** The root folders that are 0.2.x type folders (any case), for the layout move. */
+  legacyRootFolders(): string[];
 
   /**
    * Move a note (spec 2026-09-27, the 0.2.x → 0.3.0 layout move).
